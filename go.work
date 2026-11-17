@@ -1,6 +1,6 @@
 // skycoin-cx is not published yet. This workspace builds against the
 // sibling checkout. Drop it once go.mod can require a tagged release.
-go 1.26.0
+go 1.27.3
 
 use (
 	.
