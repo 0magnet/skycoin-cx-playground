@@ -1,10 +1,13 @@
-export GO111MODULE=on
+.PHONY: build run test vet
 
-dep: ## Update go vendor
-	go mod vendor
-	go mod verify
-	go mod tidy
+build: ## Build the playground into ./bin
+	go build -o ./bin/cxplayground .
 
-docker-run:
-	docker build -t cxplayground .
-	docker run -p 5336:5336 -tid cxplayground
+run: build ## Serve on :5336 from this directory (examples/ and dist/ are read from the working directory)
+	./bin/cxplayground
+
+test:
+	go test ./...
+
+vet:
+	go vet ./...

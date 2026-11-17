@@ -3,8 +3,8 @@ package webapi
 import (
 	"unicode"
 
-	"github.com/skycoin/cx/cx/ast"
-	"github.com/skycoin/cx/cx/types"
+	"github.com/skycoin/skycoin-cx/n001_types"
+	"github.com/skycoin/skycoin-cx/n006_ast"
 )
 
 // ProgramMetaResp is a program meta data response.
@@ -100,13 +100,13 @@ func displayCXGlobal(prgrm *ast.CXProgram, glbl *ast.CXTypeSignature) ExportedSy
 		glblType = types.Code(glbl.Meta)
 	case ast.TYPE_ARRAY_ATOMIC:
 		arrDetails := prgrm.GetCXTypeSignatureArrayFromArray(glbl.Meta)
-		glblType = types.Code(arrDetails.Type)
+		glblType = types.Code(arrDetails.Meta)
 	case ast.TYPE_POINTER_ARRAY_ATOMIC:
 		arrDetails := prgrm.GetCXTypeSignatureArrayFromArray(glbl.Meta)
-		glblType = types.Code(arrDetails.Type)
+		glblType = types.Code(arrDetails.Meta)
 	case ast.TYPE_SLICE_ATOMIC:
 		arrDetails := prgrm.GetCXTypeSignatureArrayFromArray(glbl.Meta)
-		glblType = types.Code(arrDetails.Type)
+		glblType = types.Code(arrDetails.Meta)
 	case ast.TYPE_CXARGUMENT_DEPRECATE:
 		arg := prgrm.GetCXArgFromArray(ast.CXArgumentIndex(glbl.Meta))
 		glblType = arg.Type

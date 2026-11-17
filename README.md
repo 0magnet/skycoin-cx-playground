@@ -4,7 +4,7 @@ The CX Playground is a web service for programmers' to test and run programs usi
 
 # Instructions
 
-- Run `go run -tags ptr64 main.go` inside this directory. You'll see the following output:
+- Check out github.com/skycoin/skycoin-cx next to this directory (go.work uses it until it is published), then run `make run`. You will see:
 
 ```
 Starting web service for CX playground on http://127.0.0.1:5336/
@@ -30,3 +30,13 @@ curl -H "Content-Type: application/json" -X GET http://localhost:5336/playground
 ```
 curl -H "Content-Type: application/json" -X POST  -d '{"examplename": "example1.cx"}' http://localhost:5336/playground/examples/code
 ```
+# How programs run
+
+Each `/eval` and `/showast` request compiles and runs the program in a child
+process, which is this binary started with `-cx-eval` or `-cx-ast`. The CX
+compiler keeps process wide state, so reusing one process gave wrong results
+from the second program on. A child that runs longer than 20 seconds is
+killed and the reply ends with `Timed out.`
+
+The Dockerfile predates the move to skycoin-cx and has not been rebuilt. It
+needs skycoin-cx to be published, or both repositories in the build context.

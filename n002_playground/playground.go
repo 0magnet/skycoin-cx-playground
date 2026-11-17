@@ -1,30 +1,30 @@
 package playground
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/skycoin/cx/cx/execute"
+	"github.com/skycoin/skycoin-cx/n010_execute"
 
-	"github.com/skycoin/cx/cxparser/actions"
-	cxparsing "github.com/skycoin/cx/cxparser/cxparsing"
-	parsingcompletor "github.com/skycoin/cx/cxparser/cxparsingcompletor"
+	"github.com/skycoin/skycoin-cx/n011_actions"
+	parsingcompletor "github.com/skycoin/skycoin-cx/n020_cxparsingcompletor"
+	cxparsing "github.com/skycoin/skycoin-cx/n021_cxparsing"
 
-	cxinit "github.com/skycoin/cx/cx/init"
-	cxparsingcompletor "github.com/skycoin/cx/cxparser/cxparsingcompletor"
-	cxpartialparsing "github.com/skycoin/cx/cxparser/cxpartialparsing"
-
-	"github.com/skycoin/cx/cx/types"
-	cxast "github.com/skycoin/cx/cx/ast"
+	"github.com/skycoin/skycoin-cx/n001_types"
+	constants "github.com/skycoin/skycoin-cx/n004_constants"
+	globals "github.com/skycoin/skycoin-cx/n005_globals"
+	cxast "github.com/skycoin/skycoin-cx/n006_ast"
 )
 
 var (
@@ -39,7 +39,7 @@ type ExampleContent struct {
 
 var InitPlayground = func(workingDir string) error {
 	types.Allocator = cxast.AllocateSeq
-	
+
 	examplesDir = filepath.Join(workingDir, "./examples")
 	exampleCollection = make(map[string]string)
 
@@ -81,7 +81,7 @@ func GetExampleFileList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	fmt.Fprintf(w, string(exampleNamesBytes))
+	fmt.Fprint(w, string(exampleNamesBytes))
 }
 
 func GetExampleFileContent(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +107,7 @@ func GetExampleFileContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintf(w, content)
+	fmt.Fprint(w, content)
 }
 
 var getExampleFileContent = func(exampleName string) (string, error) {
@@ -167,167 +167,87 @@ func ShowAst(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%s", ast(source.Code+"\n"))
 }
 
-func unsafeeval(code string) (out string) {
-	var lexer *cxparsingcompletor.Lexer
-	defer func() {
-		if r := recover(); r != nil {
-			out = fmt.Sprintf("%v", r)
-			actions.AST = cxinit.MakeProgram()
-			return
-		}
-	}()
+// evalTimeout bounds one program run, compile included.
+const evalTimeout = 20 * time.Second
 
-	// storing strings sent to standard output
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		return fmt.Sprintf("%v", err)
+// The CX compiler keeps process wide state that is not reset between
+// programs, so each request compiles and runs in a fresh child process.
+// The child is this same binary started with ChildEvalArg or ChildASTArg.
+const (
+	ChildEvalArg = "-cx-eval"
+	ChildASTArg  = "-cx-ast"
+)
+
+// RunChild handles the child modes. It reads CX source on stdin, writes
+// the program output or AST to stdout and returns the exit code. ok is
+// false when args do not select a child mode.
+func RunChild(args []string) (code int, ok bool) {
+	if len(args) < 2 || (args[1] != ChildEvalArg && args[1] != ChildASTArg) {
+		return 0, false
 	}
-	os.Stdout = w
-
-	actions.LineNo = 0
-	// Load op code tables
-	// Initialized cx program
-	parsingcompletor.InitCXCore()
-
-	// PassOne
-	cxpartialparsing.Program = actions.AST
-	cxpartialparsing.Parse(code)
-	actions.AST = cxpartialparsing.Program
-
-	// PassTwo
-	lexer = cxparsingcompletor.NewLexer(bytes.NewBufferString(code))
-	cxparsingcompletor.Parse(lexer)
-
-	err = cxparsing.AddInitFunction(actions.AST)
+	types.Allocator = cxast.AllocateSeq
+	src, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return fmt.Sprintf("%s", err)
+		fmt.Println(err)
+		return 1, true
 	}
-
-	err = execute.RunCompiled(actions.AST, 0, nil)
-	if err != nil {
-		actions.AST = cxinit.MakeProgram()
-		return fmt.Sprintf("%s", err)
+	if err := compile(string(src) + "\n"); err != nil {
+		fmt.Println(err)
+		return 1, true
 	}
-
-	outC := make(chan string)
-	go func() {
-		var buf bytes.Buffer
-		io.Copy(&buf, r)
-		outC <- buf.String()
-	}()
-
-	w.Close()
-	os.Stdout = old // restoring the real stdout
-	out = <-outC
-
-	actions.AST = cxinit.MakeProgram()
-	return out
+	if args[1] == ChildASTArg {
+		actions.AST.PrintProgram()
+		return 0, true
+	}
+	if err := execute.RunCompiled(actions.AST, 0, nil); err != nil {
+		fmt.Println(err)
+		return 1, true
+	}
+	return 0, true
 }
 
-func eval(code string) string {
-	runtime.GOMAXPROCS(2)
-	ch := make(chan string, 1)
-
-	var result string
-
-	go func() {
-		result = unsafeeval(code)
-		ch <- result
-	}()
-
-	timer := time.NewTimer(20 * time.Second)
-	defer timer.Stop()
-
-	select {
-	case <-ch:
-		return result
-	case <-timer.C:
-		actions.AST = cxinit.MakeProgram()
-		return "Timed out."
-	}
-}
-
-func getAST(code string) (out string) {
-	var lexer *cxparsingcompletor.Lexer
-	defer func() {
-		if r := recover(); r != nil {
-			out = fmt.Sprintf("%v", r)
-			actions.AST = cxinit.MakeProgram()
-			return
-		}
-	}()
-
-	// storing strings sent to standard output
-	old := os.Stdout
-	r, w, err := os.Pipe()
+func runChild(mode, code string) string {
+	self, err := os.Executable()
 	if err != nil {
-		return fmt.Sprintf("%v", err)
+		return err.Error()
 	}
-	os.Stdout = w
+	ctx, cancel := context.WithTimeout(context.Background(), evalTimeout)
+	defer cancel()
 
-	actions.LineNo = 0
-	// Load op code tables
-	// Initialized cx program
-	parsingcompletor.InitCXCore()
-
-	// PassOne
-	cxpartialparsing.Program = actions.AST
-	cxpartialparsing.Parse(code)
-	actions.AST = cxpartialparsing.Program
-
-	// PassTwo
-	lexer = cxparsingcompletor.NewLexer(bytes.NewBufferString(code))
-	cxparsingcompletor.Parse(lexer)
-
-	err = cxparsing.AddInitFunction(actions.AST)
-	if err != nil {
-		return fmt.Sprintf("%s", err)
+	cmd := exec.CommandContext(ctx, self, mode)
+	cmd.Stdin = strings.NewReader(code)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out) + "Timed out."
 	}
-
-	actions.AST.PrintProgram()
-
-	outC := make(chan string)
-	go func() {
-		var buf bytes.Buffer
-		io.Copy(&buf, r)
-		outC <- buf.String()
-	}()
-
-	w.Close()
-	os.Stdout = old // restoring the real stdout
-	out = <-outC
-
-	actions.AST = cxinit.MakeProgram()
-	return out
+	if err != nil && len(out) == 0 {
+		return err.Error()
+	}
+	return string(out)
 }
 
-func ast(code string) string {
-	runtime.GOMAXPROCS(2)
-	ch := make(chan string, 1)
+func eval(code string) string { return runChild(ChildEvalArg, code) }
 
-	var result string
-
-	go func() {
-		result = getAST(code)
-		ch <- result
-	}()
-
-	timer := time.NewTimer(20 * time.Second)
-	defer timer.Stop()
-
-	select {
-	case <-ch:
-		return result
-	case <-timer.C:
-		actions.AST = cxinit.MakeProgram()
-		return "Timed out."
-	}
-}
+func ast(code string) string { return runChild(ChildASTArg, code) }
 
 func GetMemStatus(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	fmt.Fprintf(w, "%s", strconv.FormatUint(m.HeapAlloc/1049000, 10)+"Mb Allocated / "+strconv.FormatUint(m.Sys/1049000, 10)+"Mb Reserved")
+}
+
+// compile parses code into a fresh actions.AST the same way cmd/cx does.
+func compile(code string) error {
+	parsingcompletor.InitCXCore()
+	globals.FoundCompileErrors = false
+	actions.LineNo = 0
+
+	if err := cxparsing.ParseSourceStrings([]string{code}, []string{"main.cx"}); err != nil {
+		return err
+	}
+	if _, err := actions.AST.GetFunction(constants.MAIN_FUNC, constants.MAIN_PKG); err != nil {
+		return fmt.Errorf("no main function in package main")
+	}
+	return cxparsing.AddInitFunction(actions.AST)
 }

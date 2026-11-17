@@ -5,12 +5,16 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/skycoin/cx-playground/playground"
-	"github.com/skycoin/cx-playground/webapi"
-	"github.com/skycoin/cx/cxparser/actions"
+	"github.com/skycoin/skycoin-cx-playground/n001_webapi"
+	"github.com/skycoin/skycoin-cx-playground/n002_playground"
+	"github.com/skycoin/skycoin-cx/n011_actions"
 )
 
 func main() {
+	if code, ok := playground.RunChild(os.Args); ok {
+		os.Exit(code)
+	}
+
 	workingDir, _ := os.Getwd()
 	if err := playground.InitPlayground(workingDir); err != nil {
 		// error captured while initiating the playground examples, should be handled in the future
