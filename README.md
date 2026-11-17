@@ -4,7 +4,7 @@ The CX Playground is a web service for programmers' to test and run programs usi
 
 # Instructions
 
-- Check out github.com/skycoin/skycoin-cx next to this directory (go.work uses it until it is published), then run `make run`. You will see:
+- Run `make run`. You will see:
 
 ```
 Starting web service for CX playground on http://127.0.0.1:5336/
