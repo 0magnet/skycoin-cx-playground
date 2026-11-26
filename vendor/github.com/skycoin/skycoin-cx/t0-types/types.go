@@ -18,6 +18,7 @@ const (
 	CX_RUNTIME_SLICE_INDEX_OUT_OF_RANGE
 	CX_RUNTIME_NOT_IMPLEMENTED
 	CX_RUNTIME_INVALID_CAST
+	CX_RUNTIME_LIBRARY_DISABLED
 )
 
 const (
@@ -52,6 +53,10 @@ const (
 	SLICE_SIZE = POINTER_SIZE
 
 	STR_SIZE = POINTER_SIZE
+
+	// AFF_SIZE is an aff value, four i32 the compiler resolves from an aff
+	// literal, see docs/IR.md.
+	AFF_SIZE = Pointer(16)
 )
 
 type Code int
@@ -96,6 +101,12 @@ func (t Code) Name() string {
 	return definitions[t].name
 }
 
+// NameBytes returns the bytes of Name without building a string, for
+// printing on the run path (#412). The caller must not write to them.
+func (t Code) NameBytes() []byte {
+	return definitionNames[t]
+}
+
 func (t Code) Size() Pointer {
 	//	panicIf(!definitions[t].size.IsValid(), CX_RUNTIME_INVALID_ARGUMENT)
 	return definitions[t].size
@@ -135,21 +146,10 @@ var definitions []Type = []Type{
 	{"slice", SLICE_SIZE, false},
 	{"struct", InvalidPointer, false},
 	{"func", InvalidPointer, false},
-	{"aff", InvalidPointer, false},
+	{"aff", AFF_SIZE, false},
 	{"und", InvalidPointer, false},
 	{"ident", POINTER_SIZE, false}, // TODO:PTR use InvalidPointer to track addressing issues.
 	{"invalid type", 0, false},
-}
-
-type AllocatorHandler func(interface{}, Pointer) Pointer
-
-// VIOLATION: state outside State. Owner: t0-types; moves to CXProgramMng in phase 2.
-var Allocator AllocatorHandler
-
-func debugPanicIf(condition bool, error int) {
-	if condition {
-		panic(error)
-	}
 }
 
 func panicIf(condition bool, error int) {
@@ -240,6 +240,7 @@ func Read_f64(memory []byte, offset Pointer) float64 {
 	return math.Float64frombits(Read_ui64(memory, offset))
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_i8(memory []byte, offset Pointer) (out []int8) {
 	count := Cast_int_to_ptr(len(memory))
 	if count > 0 {
@@ -251,6 +252,7 @@ func ReadSlice_i8(memory []byte, offset Pointer) (out []int8) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_i16(memory []byte, offset Pointer) (out []int16) {
 	count := Cast_int_to_ptr(len(memory) / 2)
 	if count > 0 {
@@ -262,6 +264,7 @@ func ReadSlice_i16(memory []byte, offset Pointer) (out []int16) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_i32(memory []byte, offset Pointer) (out []int32) {
 	count := Cast_int_to_ptr(len(memory) / 4)
 	if count > 0 {
@@ -273,6 +276,7 @@ func ReadSlice_i32(memory []byte, offset Pointer) (out []int32) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_i64(memory []byte, offset Pointer) (out []int64) {
 	count := Cast_int_to_ptr(len(memory) / 8)
 	if count > 0 {
@@ -284,6 +288,7 @@ func ReadSlice_i64(memory []byte, offset Pointer) (out []int64) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_ui8(memory []byte, offset Pointer) (out []uint8) {
 	count := Cast_int_to_ptr(len(memory))
 	if count > 0 {
@@ -295,6 +300,7 @@ func ReadSlice_ui8(memory []byte, offset Pointer) (out []uint8) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_ui16(memory []byte, offset Pointer) (out []uint16) {
 	count := Cast_int_to_ptr(len(memory) / 2)
 	if count > 0 {
@@ -306,6 +312,7 @@ func ReadSlice_ui16(memory []byte, offset Pointer) (out []uint16) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_ui32(memory []byte, offset Pointer) (out []uint32) {
 	count := Cast_int_to_ptr(len(memory) / 4)
 	if count > 0 {
@@ -328,6 +335,7 @@ func ReadSlice_ui64(memory []byte, offset Pointer) (out []uint64) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_f32(memory []byte, offset Pointer) (out []float32) {
 	count := Cast_int_to_ptr(len(memory) / 4)
 	if count > 0 {
@@ -339,6 +347,7 @@ func ReadSlice_f32(memory []byte, offset Pointer) (out []float32) {
 	return
 }
 
+// VIOLATION VMALLOC-012: copies a slice into a new Go slice, for the boundary opcodes only, #407.
 func ReadSlice_f64(memory []byte, offset Pointer) (out []float64) {
 	count := Cast_int_to_ptr(len(memory) / 8)
 	if count > 0 {
@@ -452,4 +461,17 @@ func TotalLength(lengths []Pointer) Pointer {
 	}
 
 	return total
+}
+
+// definitionNames holds the name of each definition as bytes. It is built
+// while the package initializes, so AppendName reads no string.
+var definitionNames = definitionNamesMake()
+
+func definitionNamesMake() [][]byte {
+	names := make([][]byte, len(definitions))
+	for i, definition := range definitions {
+		names[i] = []byte(definition.name)
+		names[i] = names[i][:len(names[i]):len(names[i])]
+	}
+	return names
 }

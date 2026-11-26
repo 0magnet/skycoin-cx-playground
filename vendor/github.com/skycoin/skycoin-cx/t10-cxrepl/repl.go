@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/skycoin/skycoin-cx/t2-globals"            // thin: only FoundCompileErrors; no depth gain
-	"github.com/skycoin/skycoin-cx/t3-ast"                // thin: only InREPL, SourceFileGidNil; no depth gain
+	"github.com/skycoin/skycoin-cx/t3-ast"                // thin: only InREPL, ProgramMemoryRelease, SourceFileGidNil; no depth gain
+	"github.com/skycoin/skycoin-cx/t4-cx-runtime-printer" // thin: only PrinterCompileErrorsPrint, PrinterRuntimeErrorPrint; no depth gain
 	"github.com/skycoin/skycoin-cx/t4-execute"            // thin: only RunCompiled; no depth gain
-	"github.com/skycoin/skycoin-cx/t5-cx-runtime-printer" // thin: only PrinterCompileErrorsPrint, PrinterRuntimeErrorPrint; no depth gain
 	cxinit "github.com/skycoin/skycoin-cx/t7-init"        // thin: only MakeProgram, RegisterPackages; no depth gain
 
 	"github.com/skycoin/skycoin-cx/t4-actions"                               // thin: only AST, LineNo; no depth gain
@@ -108,6 +108,14 @@ func unsafeEval(code string) (out string) {
 		restore()
 		return fmt.Sprintf("%s", err)
 	}
+	// AddInitFunction records initialization cycles and global type errors (#519).
+	if globals.FoundCompileErrors {
+		printer.PrinterCompileErrorsPrint(actions.AST)
+		restore()
+		actions.AST = cxinit.MakeProgram()
+		cxinit.RegisterPackages(actions.AST)
+		return cxparsering.ErrCompilation.Error()
+	}
 
 	actions.AST.CxIrState.CxIrStateManagerGrowBoundary()
 	actions.AST.CxIrState.StringPool.StringPoolFreeze()
@@ -121,6 +129,7 @@ func unsafeEval(code string) (out string) {
 		// VIOLATION: init chaining. Init 7-8 again, a fresh program on REPL reset.
 		// OBJMODEL: state.CXProgramMng.CXProgramAlloc(), phase 4 #371.
 		// Also state.CXProgramMng.CXProgramRelease(gid), phase 4 #371. Site S0005 S0006.
+		ast.ProgramMemoryRelease(actions.AST)
 		actions.AST = cxinit.MakeProgram()
 		cxinit.RegisterPackages(actions.AST)
 		return fmt.Sprintf("%s", err)
@@ -132,13 +141,14 @@ func unsafeEval(code string) (out string) {
 	// VIOLATION: init chaining. Init 7-8 again, a fresh program on REPL reset.
 	// OBJMODEL: state.CXProgramMng.CXProgramAlloc(), phase 4 #371.
 	// Also state.CXProgramMng.CXProgramRelease(gid), phase 4 #371. Site S0007 S0008.
+	ast.ProgramMemoryRelease(actions.AST)
 	actions.AST = cxinit.MakeProgram()
 	cxinit.RegisterPackages(actions.AST)
 	return out
 }
 
 // Eval runs code as a CX program and returns its output. The caller must
-// first run the init in t11-cx Run: InitConstants, MakeProgram, RegisterPackages, RegisterOpcodes.
+// first run the init in t11-cx Run: InitConstants, MakeProgram, RegisterPackages.
 func Eval(code string) string {
 	runtime.GOMAXPROCS(2)
 	ch := make(chan string, 1)

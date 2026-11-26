@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/skycoin/skycoin-cx/t1-constants"
+	"github.com/skycoin/skycoin-cx/t1-netbatch"
+	core "github.com/skycoin/skycoin-cx/t5-cx-runtime-core" // thin: only ExecutorAuto; no depth gain
 )
 
 type cxCmdFlags struct {
@@ -27,6 +31,9 @@ type cxCmdFlags struct {
 	cxpath           string
 	sandbox          string
 	executor         string
+	enable           string
+	netRecord        string
+	netReplay        string
 
 	// Debug flags for the CX developers
 	debugFileAccess bool
@@ -44,7 +51,7 @@ func defaultCmdFlags() cxCmdFlags {
 		printVersion:    false,
 		debugFileAccess: false,
 		debugProfile:    0,
-		executor:        executorAuto,
+		executor:        core.ExecutorAuto,
 	}
 }
 
@@ -82,7 +89,7 @@ func parseFlags(options *cxCmdFlags, args []string) {
 	commandLine.BoolVar(&options.replMode, "r", options.replMode, "alias for -repl")
 	commandLine.StringVar(&options.initialHeap, "heap-initial", options.initialHeap, "Initial heap size of the CX virtual machine in bytes. The suffixes G, M and K (or g, m and k) mean gigabytes, megabytes and kilobytes.")
 	commandLine.StringVar(&options.initialHeap, "hi", options.initialHeap, "alias for -heap-initial")
-	commandLine.StringVar(&options.maxHeap, "heap-max", options.maxHeap, "Maximum heap size of the CX virtual machine, in the units of -heap-initial. A -heap-max below -heap-initial lowers the initial heap to it.")
+	commandLine.StringVar(&options.maxHeap, "heap-max", options.maxHeap, "Heap cap of the CX virtual machine, 64M by default, in the units of -heap-initial. The heap is allocated once at this size when the program loads, a program that needs more stops with an out of memory error, and cx build stores the cap in the built program. A -heap-max below -heap-initial lowers the initial heap to it.")
 	commandLine.StringVar(&options.maxHeap, "hm", options.maxHeap, "alias for -heap-max")
 	commandLine.StringVar(&options.stackSize, "stack-size", options.stackSize, "Stack size of the CX virtual machine, in the units of -heap-initial")
 	commandLine.StringVar(&options.stackSize, "ss", options.stackSize, "alias for -stack-size")
@@ -91,6 +98,9 @@ func parseFlags(options *cxCmdFlags, args []string) {
 	commandLine.StringVar(&options.cxpath, "cxpath", options.cxpath, "Workspace directory, used instead of the CXPATH environment variable")
 	commandLine.StringVar(&options.sandbox, "sandbox", options.sandbox, "Directory a running program's file opcodes are confined to. Program paths must be relative and stay inside it. Defaults to the working directory.")
 	commandLine.StringVar(&options.executor, "executor", options.executor, "Loop that runs the program: auto runs it on the flat vm when every function lowers and on the old loop otherwise, old and vm force one loop. vm fails on a program that does not lower.")
+	commandLine.StringVar(&options.enable, "enable", options.enable, "System libraries and library operations the program may call, a comma separated list of the libraries file, net, process and cipher and of single operations such as cipher.HashStateNew. A program that uses a cipher operation that is not enabled is refused before it runs, and a call into another library that is not enabled is the runtime error CX_RUNTIME_LIBRARY_DISABLED. See System libraries in LanguageGuide.md.")
+	commandLine.StringVar(&options.netRecord, "net-record", options.netRecord, "Write every batch of the net library to this replay record, see docs/Networking.md")
+	commandLine.StringVar(&options.netReplay, "net-replay", options.netReplay, "Run the net library from this replay record and open no socket, see docs/Networking.md")
 
 	// Debug flags
 	commandLine.BoolVar(&options.debugFileAccess, "debug-file-access", options.debugFileAccess, "Print each file the compiler opens, creates or stats")
@@ -172,4 +182,46 @@ func printEnv() {
 // dashes, so a file path containing the name is not taken for it.
 func command(arg, name string) bool {
 	return strings.TrimLeft(arg, "-") == name
+}
+
+// librariesEnabledParse returns the system libraries and the library
+// operations the --enable list names, or the problem with it. An entry is a
+// library name, which enables every operation of the library, or one
+// operation, cipher.HashStateNew (decision D119).
+func librariesEnabledParse(list string) (enabled [constants.LibraryCount]bool, operations constants.OpcodeSet, problem string) {
+	for _, name := range strings.Split(list, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if library, found := constants.LibraryByName(name); found {
+			enabled[library.LibraryNumber] = true
+			continue
+		}
+		if code, found := constants.LibraryOperationByName(name); found {
+			operations.OpcodeSetAdd(code)
+			continue
+		}
+		var names []string
+		for _, known := range constants.LibraryTable {
+			names = append(names, known.LibraryName)
+		}
+		return enabled, operations, fmt.Sprintf("unknown library or operation %q in --enable, the libraries are %s, and an operation is a library and a function, as cipher.HashStateNew", name, strings.Join(names, ", "))
+	}
+	return enabled, operations, ""
+}
+
+// netModeSet sets where the net library takes its batches from, by
+// --net-record and --net-replay, and returns a problem when both are given.
+func netModeSet(options cxCmdFlags) string {
+	netbatch.NetRunMode, netbatch.NetRunRecordPath = netbatch.NetModeLive, ""
+	switch {
+	case options.netRecord != "" && options.netReplay != "":
+		return "--net-record and --net-replay cannot both be given"
+	case options.netRecord != "":
+		netbatch.NetRunMode, netbatch.NetRunRecordPath = netbatch.NetModeRecord, options.netRecord
+	case options.netReplay != "":
+		netbatch.NetRunMode, netbatch.NetRunRecordPath = netbatch.NetModeReplay, options.netReplay
+	}
+	return ""
 }

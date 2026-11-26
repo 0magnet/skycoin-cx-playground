@@ -1,11 +1,10 @@
 package execute
 
 import (
-	"math/rand"
-	"time"
-
 	"github.com/skycoin/skycoin-cx/t0-types"
 	"github.com/skycoin/skycoin-cx/t1-constants"
+	// GCREACH: t3-ast owns the heap and the GC roots. The old loop runs opcodes that
+	// allocate, which adds to the GC pressure, see docs/GarbageCollector.md.
 	"github.com/skycoin/skycoin-cx/t3-ast"
 )
 
@@ -13,17 +12,28 @@ import (
 // in cxprogram.RuntimeError for the printer package, see #413.
 func RunCxAst(cxprogram *ast.CXProgram, untilEnd bool, maxOps int, untilCall types.Pointer) error {
 	defer ast.RuntimeError(cxprogram)
-	return runLoop(cxprogram, untilEnd, maxOps, untilCall)
+	return runLoop(cxprogram, untilEnd, maxOps, untilCall, &cxprogram.ProgramInputValues, &cxprogram.ProgramOutputValues)
 }
 
 // runLoop is RunCxAst without the deferred RuntimeError. A panic goes up to
-// the RunCxAst that runs the opcode which called Callback.
-func runLoop(cxprogram *ast.CXProgram, untilEnd bool, maxOps int, untilCall types.Pointer) error {
-	var inputs []ast.CXValue
-	var outputs []ast.CXValue
+// the RunCxAst that runs the opcode which called Callback. The outer loop
+// ticks the GC after each step. The loop Callback nests inside a native
+// opcode does not, so nothing moves under that opcode.
+// GCREACH: the GC tick, at a safe point where every root is in a slot,
+// see docs/GarbageCollector.md.
+func runLoop(cxprogram *ast.CXProgram, untilEnd bool, maxOps int, untilCall types.Pointer, inputs *[]ast.CXValue, outputs *[]ast.CXValue) error {
 	var opCount int = 0
+	gcTick := !untilCall.IsValid()
+	// fn is borrowed for the run, which has no grow boundary and releases no
+	// function, and is read again only when the call names another function.
+	var fn *ast.CXFunction
+	fnGid := ast.CXFunctionGidNil
 	for !cxprogram.Terminated && (untilEnd || (opCount < maxOps)) && (!untilCall.IsValid() || cxprogram.CallCounter > untilCall) {
 		call := &cxprogram.CallStack[cxprogram.CallCounter]
+		if call.Operator != fnGid {
+			fnGid = call.Operator
+			fn = cxprogram.CxIrState.CXFunctionMng.CXFunctionGet(fnGid)
+		}
 
 		// checking if enough memory in stack
 		if cxprogram.Stack.Pointer > constants.STACK_SIZE {
@@ -32,19 +42,23 @@ func runLoop(cxprogram *ast.CXProgram, untilEnd bool, maxOps int, untilCall type
 
 		opCount++
 
-		err := call.Call(cxprogram, &inputs, &outputs)
+		err := call.Call(cxprogram, fn, inputs, outputs)
 		if err != nil {
 			return err
+		}
+		if gcTick && ast.GarbageCollectorCheck(cxprogram) {
+			ast.GarbageCollectorTrigger(cxprogram)
 		}
 	}
 
 	return nil
 }
 
+// runSysInitFunc runs *init, ticking the GC after each step as runLoop does.
+// A runtime error ends it with nil and is left in cxprogram.RuntimeError, as in RunCxAst.
+// GCREACH: the GC tick of *init, see docs/GarbageCollector.md.
 func runSysInitFunc(cxprogram *ast.CXProgram, mod *ast.CXPackage) error {
-	var inputs []ast.CXValue
-	var outputs []ast.CXValue
-
+	defer ast.RuntimeError(cxprogram)
 	fn, err := mod.SelectFunction(cxprogram, cxprogram.CxIrState.CxIrStateNameSysInit)
 	if err != nil {
 		return err
@@ -53,26 +67,35 @@ func runSysInitFunc(cxprogram *ast.CXProgram, mod *ast.CXPackage) error {
 	// *init function
 	// OBJMODEL: state.CXCallMng.CXCallAlloc(), phase 4 #366.
 	// Now a constructor call, site S1249.
-	mainCall := MakeCall(cxprogram, fn)
+	mainCall := MakeCall(cxprogram, cxprogram.CXProgramFunctionGid(fn))
 	cxprogram.CallStack[0] = mainCall
 	cxprogram.Stack.Pointer = fn.Size
 
 	for !cxprogram.Terminated {
 		call := &cxprogram.CallStack[cxprogram.CallCounter]
-		err = call.Call(cxprogram, &inputs, &outputs)
+		err = call.Call(cxprogram, cxprogram.CxIrState.CXFunctionMng.CXFunctionGet(call.Operator), &cxprogram.ProgramInputValues, &cxprogram.ProgramOutputValues)
 		if err != nil {
 			return err
+		}
+		if ast.GarbageCollectorCheck(cxprogram) {
+			ast.GarbageCollectorTrigger(cxprogram)
 		}
 	}
 	// we reset call state
 	cxprogram.Terminated = false
 	cxprogram.CallCounter = 0
-	cxprogram.CallStack[0].Operator = nil
+	cxprogram.CallStack[0].Operator = ast.CXFunctionGidNil
 
 	return nil
 }
 
+// GCREACH: allocates the os.Args strs and slice, which adds to
+// the GC pressure, see docs/GarbageCollector.md.
 func feedOSArgs(cxprogram *ast.CXProgram, args []string) error {
+	// SelectPackage builds an error when os is not imported, so look first.
+	if _, imported := cxprogram.Packages[cxprogram.CxIrState.CxIrStateNameOs]; !imported {
+		return nil
+	}
 	if osPkg, err := cxprogram.SelectPackage(cxprogram.CxIrState.CxIrStateNameOs); err == nil {
 		argsOffset := types.Pointer(0)
 		if osGlbl, err := osPkg.GetGlobal(cxprogram, cxprogram.CxIrState.CxIrStateNameOsArgs); err == nil {
@@ -89,10 +112,18 @@ func feedOSArgs(cxprogram *ast.CXProgram, args []string) error {
 	return nil
 }
 
-// RunCompiled ...
-func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
+// RunPrepare sizes the heap and the buffers the old loop reuses, so a run of
+// cxprogram allocates no Go memory for them (#407). RunCompiled calls it too,
+// and it allocates nothing once cxprogram is prepared.
+func RunPrepare(cxprogram *ast.CXProgram) {
 	cxprogram.EnsureMinimumHeapSize()
-	rand.Seed(time.Now().UTC().UnixNano())
+	cxprogram.RunBuffersPrepare()
+}
+
+// RunCompiled runs cxprogram from *init and main, or goes on with the call
+// in progress, for at most maxOps steps when maxOps is not 0.
+func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
+	RunPrepare(cxprogram)
 
 	var untilEnd bool
 	if maxOps == 0 {
@@ -102,7 +133,7 @@ func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
 	// initializing program resources
 	// cxprogram.Stacks = append(cxprogram.Stacks, MakeStack(1024))
 
-	if cxprogram.CallStack[0].Operator == nil {
+	if cxprogram.CallStack[0].Operator == ast.CXFunctionGidNil {
 		mod, err := cxprogram.SelectPackage(cxprogram.CxIrState.CxIrStateNameMain)
 		if err != nil {
 			return err
@@ -112,6 +143,9 @@ func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
 		err = runSysInitFunc(cxprogram, mod)
 		if err != nil {
 			return err
+		}
+		if cxprogram.RuntimeError.RuntimeErrorRecordRaised {
+			return nil
 		}
 
 		fn, err := mod.SelectFunction(cxprogram, cxprogram.CxIrState.CxIrStateNameMain)
@@ -126,7 +160,7 @@ func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
 		// main function
 		// OBJMODEL: state.CXCallMng.CXCallAlloc(), phase 4 #366.
 		// Now a constructor call, site S1250.
-		mainCall := MakeCall(cxprogram, fn)
+		mainCall := MakeCall(cxprogram, cxprogram.CXProgramFunctionGid(fn))
 		mainCall.FramePointer = cxprogram.Stack.Pointer
 		// initializing program resources
 		cxprogram.CallStack[0] = mainCall
@@ -153,7 +187,7 @@ func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
 	if cxprogram.Terminated {
 		cxprogram.Terminated = false
 		cxprogram.CallCounter = 0
-		cxprogram.CallStack[0].Operator = nil
+		cxprogram.CallStack[0].Operator = ast.CXFunctionGidNil
 	}
 
 	// debugging memory
@@ -166,7 +200,7 @@ func RunCompiled(cxprogram *ast.CXProgram, maxOps int, args []string) error {
 
 // OBJMODEL: state.CXCallMng.CXCallAlloc(), phase 4 #366.
 // Now a constructor, site S1251.
-func MakeCall(prgrm *ast.CXProgram, op *ast.CXFunction) ast.CXCall {
+func MakeCall(prgrm *ast.CXProgram, op ast.CXFunctionGid) ast.CXCall {
 	// OBJMODEL: state.CXCallMng.CXCallAlloc(), phase 4 #366.
 	// Now a value literal, site S1252.
 	return ast.CXCall{

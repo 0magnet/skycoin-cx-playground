@@ -16,35 +16,16 @@ type CXPackageMethodKey struct {
 	CXPackageMethodKeyMethod stringpool.StringGid
 }
 
-// Only Used by Affordances in op_aff.go
+// GetFunction returns the function fnName of pkg. A function of an import
+// is reached as pkg.name or through an import into scope, see #487.
 func (pkg *CXPackage) GetFunction(prgrm *CXProgram, fnName stringpool.StringGid) (*CXFunction, error) {
 	if fnIdx, ok := pkg.Functions[fnName]; ok {
-		// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-		// Now an arena getter, site S0158.
-		fn := prgrm.GetFunctionFromArray(fnIdx)
+		fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 
 		return fn, nil
 	}
 
-	// now checking in imported packages
-	for _, impIdx := range pkg.Imports {
-		// OBJMODEL: state.CXPackageMng.CXPackageGet(gid), phase 5 #362.
-		// Now an arena getter, site S0159.
-		imp, err := prgrm.GetPackageFromArray(impIdx)
-		if err != nil {
-			panic(err)
-		}
-
-		if fnIdx, ok := imp.Functions[fnName]; ok {
-			// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-			// Now an arena getter, site S0160.
-			fn := prgrm.GetFunctionFromArray(fnIdx)
-
-			return fn, nil
-		}
-	}
-
-	return nil, fmt.Errorf("function '%s' not found in package '%s' or its imports", prgrm.CXProgramNameText(fnName), prgrm.CXProgramNameText(pkg.Name))
+	return nil, fmt.Errorf("function '%s' not found in package '%s'", prgrm.CXProgramNameText(fnName), prgrm.CXProgramNameText(pkg.Name))
 }
 
 // GetImport ...
@@ -63,45 +44,27 @@ func (pkg *CXPackage) GetImport(prgrm *CXProgram, impName stringpool.StringGid) 
 }
 
 // GetMethod returns the method methodName of the struct receiverName.
-func (pkg *CXPackage) GetMethod(prgrm *CXProgram, receiverName stringpool.StringGid, methodName stringpool.StringGid) (CXFunctionIndex, error) {
+func (pkg *CXPackage) GetMethod(prgrm *CXProgram, receiverName stringpool.StringGid, methodName stringpool.StringGid) (CXFunctionGid, error) {
 	if fnIdx, ok := pkg.Methods[CXPackageMethodKey{CXPackageMethodKeyStruct: receiverName, CXPackageMethodKeyMethod: methodName}]; ok {
 		return fnIdx, nil
 	}
 
-	// Trying to find it in `Natives`.
-	// Most likely a method from a core package. OpCodes stays keyed by text
-	// until CXNativeFunction names are Gids, see #413.
-	if opCode, found := OpCodes[prgrm.CXProgramNameText(pkg.Name)+"."+prgrm.CXProgramNameText(receiverName)+"."+prgrm.CXProgramNameText(methodName)]; found {
-		// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-		// Now an arena insert, site S0167.
-		opFnIdx := prgrm.AddNativeFunctionInArray(Natives[opCode])
+	// Trying to find it among the built-ins.
+	// Most likely a method from a core package.
+	if native, found := prgrm.CXProgramNativeFind(&NativeNames, pkg.Name, receiverName, methodName); found {
+		opFnIdx := prgrm.AddNativeFunctionInArray(NativeFunctionOf(prgrm, native.NativeNameEntryCode))
 		return opFnIdx, nil
 	}
 
-	return -1, fmt.Errorf("method '%s.%s' not found in package '%s'", prgrm.CXProgramNameText(receiverName), prgrm.CXProgramNameText(methodName), prgrm.CXProgramNameText(pkg.Name))
+	return CXFunctionGidNil, fmt.Errorf("method '%s.%s' not found in package '%s'", prgrm.CXProgramNameText(receiverName), prgrm.CXProgramNameText(methodName), prgrm.CXProgramNameText(pkg.Name))
 }
 
-// GetStruct ...
+// GetStruct returns the struct strctName of pkg, not one of its imports.
 func (pkg *CXPackage) GetStruct(prgrm *CXProgram, strctName stringpool.StringGid) (*CXStruct, error) {
 	if strctIdx, ok := pkg.Structs[strctName]; ok {
 		// OBJMODEL: state.CXStructMng.CXStructGet(gid), phase 5 #337.
 		// Now a pointer into an arena, site S0168.
 		return &prgrm.CXStructs[strctIdx], nil
-	}
-
-	// looking in imports
-	for _, impIdx := range pkg.Imports {
-		// OBJMODEL: state.CXPackageMng.CXPackageGet(gid), phase 5 #362.
-		// Now an arena getter, site S0169.
-		imp, err := prgrm.GetPackageFromArray(impIdx)
-		if err != nil {
-			panic(err)
-		}
-		if strctIdx, ok := imp.Structs[strctName]; ok {
-			// OBJMODEL: state.CXStructMng.CXStructGet(gid), phase 5 #337.
-			// Now a pointer into an arena, site S0170.
-			return &prgrm.CXStructs[strctIdx], nil
-		}
 	}
 
 	return nil, fmt.Errorf("struct '%s' not found in package '%s'", prgrm.CXProgramNameText(strctName), prgrm.CXProgramNameText(pkg.Name))
@@ -124,13 +87,11 @@ func (pkg *CXPackage) GetGlobal(prgrm *CXProgram, defName stringpool.StringGid) 
 
 // GetCurrentFunction ...
 func (pkg *CXPackage) GetCurrentFunction(prgrm *CXProgram) (*CXFunction, error) {
-	if pkg.CurrentFunction == -1 {
+	if pkg.CurrentFunction == CXFunctionGidNil {
 		return nil, errors.New("current function is nil")
 	}
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0172.
-	return prgrm.GetFunctionFromArray(pkg.CurrentFunction), nil
+	return prgrm.CxIrState.CXFunctionMng.CXFunctionGet(pkg.CurrentFunction), nil
 }
 
 // ----------------------------------------------------------------
@@ -145,9 +106,7 @@ func (pkg *CXPackage) SelectFunction(prgrm *CXProgram, name stringpool.StringGid
 	idx := pkg.Functions[name]
 	pkg.CurrentFunction = idx
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0173.
-	return prgrm.GetFunctionFromArray(idx), nil
+	return prgrm.CxIrState.CXFunctionMng.CXFunctionGet(idx), nil
 }
 
 // MakePackage creates a new empty CXPackage.
@@ -165,9 +124,9 @@ func MakePackage(name stringpool.StringGid) *CXPackage {
 		Globals:         &CXStruct{},
 		Imports:         make(map[stringpool.StringGid]CXPackageIndex, 0),
 		Structs:         make(map[stringpool.StringGid]CXStructIndex, 0),
-		Functions:       make(map[stringpool.StringGid]CXFunctionIndex, 0),
-		Methods:         make(map[CXPackageMethodKey]CXFunctionIndex, 0),
-		CurrentFunction: -1,
+		Functions:       make(map[stringpool.StringGid]CXFunctionGid, 0),
+		Methods:         make(map[CXPackageMethodKey]CXFunctionGid, 0),
+		CurrentFunction: CXFunctionGidNil,
 	}
 }
 
@@ -196,20 +155,18 @@ func (pkg *CXPackage) RemoveImport(impName stringpool.StringGid) {
 	}
 }
 
-// AddFunction adds fn to pkg. A second function of the same name is an
+// AddFunction adds fn, allocated by MakeFunction, to pkg. A second function of the same name is an
 // error and stays out of pkg.Functions, so the first keeps the name as in Go.
-func (pkg *CXPackage) AddFunction(prgrm *CXProgram, fn *CXFunction) (*CXPackage, CXFunctionIndex) {
+func (pkg *CXPackage) AddFunction(prgrm *CXProgram, fn *CXFunction) (*CXPackage, CXFunctionGid) {
 	return pkg, pkg.addFunction(prgrm, fn, CompileErrorCodeRedeclaredBlock)
 }
 
-func (pkg *CXPackage) addFunction(prgrm *CXProgram, fn *CXFunction, code CompileErrorCode) CXFunctionIndex {
+func (pkg *CXPackage) addFunction(prgrm *CXProgram, fn *CXFunction, code CompileErrorCode) CXFunctionGid {
 	fn.Package = CXPackageIndex(pkg.Index)
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-	// Now an arena insert, site S0178.
-	fnIdx := prgrm.AddFunctionInArray(fn)
+	fnIdx := prgrm.CXProgramFunctionGid(fn)
 	if firstIdx, ok := pkg.Functions[fn.Name]; ok {
-		first := prgrm.GetFunctionFromArray(firstIdx)
+		first := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(firstIdx)
 		column := fn.FileColumn
 		if column == 0 {
 			column = prgrm.CXProgramCompileErrorColumn(fn.FileName, fn.FileLine)
@@ -225,7 +182,7 @@ func (pkg *CXPackage) addFunction(prgrm *CXProgram, fn *CXFunction, code Compile
 
 // AddMethod adds fn, the method methodName of the struct receiverName. The
 // name of fn is "receiverName.methodName", see CXProgramMethodNameIntern.
-func (pkg *CXPackage) AddMethod(prgrm *CXProgram, fn *CXFunction, receiverName stringpool.StringGid, methodName stringpool.StringGid) (*CXPackage, CXFunctionIndex) {
+func (pkg *CXPackage) AddMethod(prgrm *CXProgram, fn *CXFunction, receiverName stringpool.StringGid, methodName stringpool.StringGid) (*CXPackage, CXFunctionGid) {
 	key := CXPackageMethodKey{CXPackageMethodKeyStruct: receiverName, CXPackageMethodKeyMethod: methodName}
 	_, declared := pkg.Methods[key]
 	fnIdx := pkg.addFunction(prgrm, fn, CompileErrorCodeMethodRedeclared)
@@ -238,22 +195,22 @@ func (pkg *CXPackage) AddMethod(prgrm *CXProgram, fn *CXFunction, receiverName s
 // FunctionDeclarationAt returns the function declared at file, line and
 // column with the name and package of fnIdx. It is fnIdx unless the name was
 // declared twice, or for a line of 0.
-func (prgrm *CXProgram) FunctionDeclarationAt(fnIdx CXFunctionIndex, file SourceFileGid, line int, column int) CXFunctionIndex {
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+func (prgrm *CXProgram) FunctionDeclarationAt(fnIdx CXFunctionGid, file SourceFileGid, line int, column int) CXFunctionGid {
+	fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 	if line == 0 || fn.FileName == file && fn.FileLine == line && fn.FileColumn == column {
 		return fnIdx
 	}
-	for index := range prgrm.CXFunctions {
-		other := &prgrm.CXFunctions[index]
-		if other.Name == fn.Name && other.Package == fn.Package && other.FileName == file && other.FileLine == line && other.FileColumn == column {
-			return CXFunctionIndex(index)
+	for index := 0; index < prgrm.CXProgramFunctionSlotCount(); index++ {
+		other := prgrm.CXProgramFunctionSlotLive(index)
+		if other != nil && other.Name == fn.Name && other.Package == fn.Package && other.FileName == file && other.FileLine == line && other.FileColumn == column {
+			return prgrm.CXProgramFunctionSlotGid(uint32(index))
 		}
 	}
 	return fnIdx
 }
 
-// RemoveFunction ...
-func (pkg *CXPackage) RemoveFunction(fnName stringpool.StringGid) {
+// RemoveFunction removes the function fnName from pkg and releases it.
+func (pkg *CXPackage) RemoveFunction(prgrm *CXProgram, fnName stringpool.StringGid) {
 	fnIdx, ok := pkg.Functions[fnName]
 	if !ok {
 		return
@@ -264,9 +221,11 @@ func (pkg *CXPackage) RemoveFunction(fnName stringpool.StringGid) {
 		}
 	}
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionRelease(gid), phase 4 #351.
-	// Now a dropped object, site S0179.
 	delete(pkg.Functions, fnName)
+	if pkg.CurrentFunction == fnIdx {
+		pkg.CurrentFunction = CXFunctionGidNil
+	}
+	prgrm.CXProgramFunctionRelease(fnIdx)
 }
 
 // AddStruct ...

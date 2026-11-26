@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/skycoin/skycoin-cx/t0-types"
+	"github.com/skycoin/skycoin-cx/t1-cipherstate"
 	"github.com/skycoin/skycoin-cx/t2-cx-runtime-ir"
 )
 
@@ -899,6 +900,14 @@ func (machine *Machine) slow() Stop {
 			return machine.slowStop(StopAddressInvalid)
 		}
 		return machine.printBytes(str, ir.PrintStrMode(in.InstrN))
+	case ir.OpcodeCipherHashStateNew:
+		wI32(mem, machine.MachineStackPointer, cipherstate.HashStateNew())
+	case ir.OpcodeCipherHashStateRelease:
+		cipherstate.HashStateRelease(rI32(mem, machine.MachineStackPointer))
+	case ir.OpcodeNetUpdate, ir.OpcodeNetReadyCount, ir.OpcodeNetReadyNext, ir.OpcodeNetClock, ir.OpcodeNetRead, ir.OpcodeNetWrite, ir.OpcodeNetClose, ir.OpcodeNetTimeoutSet, ir.OpcodeNetTCPListen, ir.OpcodeNetTCPDial, ir.OpcodeNetUDPListen, ir.OpcodeNetUDPDial, ir.OpcodeNetUDPReadFrom, ir.OpcodeNetUDPWriteTo, ir.OpcodeNetUDPPeerResolve:
+		netOpcodeRun(in.InstrOpcode, mem, machine.MachineStackPointer)
+	case ir.OpcodeFileClose, ir.OpcodeFileSeek, ir.OpcodeFileSync:
+		fileOpcodeRun(in.InstrOpcode, mem, machine.MachineStackPointer)
 	case ir.OpcodePrintValue:
 		machine.MachineOutput = printValue(machine.MachineOutput, mem, a, types.Code(in.InstrM), byte(in.InstrN))
 	case ir.OpcodeTestEqual:
@@ -968,25 +977,9 @@ func (machine *Machine) printBytes(src []byte, mode ir.PrintStrMode) Stop {
 		if len(out) == cap(out) {
 			return machine.printFull(out, cursor)
 		}
-		if mode != ir.PrintStrModeEscaped {
-			n := copy(out[len(out):cap(out)], src[cursor:])
-			out = out[:len(out)+n]
-			cursor += n
-			continue
-		}
-		ch := src[cursor]
-		if ch == '\\' && cursor+1 < len(src) {
-			switch src[cursor+1] {
-			case '%':
-				ch = '%'
-				cursor++
-			case 'n':
-				ch = '\n'
-				cursor++
-			}
-		}
-		out = append(out, ch)
-		cursor++
+		n := copy(out[len(out):cap(out)], src[cursor:])
+		out = out[:len(out)+n]
+		cursor += n
 	}
 	if mode == ir.PrintStrModeLine {
 		if len(out) == cap(out) {

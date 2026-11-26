@@ -34,10 +34,8 @@
 		return yyParse(NewLexer(codeBuf))
 	}
 
-	func PreFunctionDeclaration (fnIdx ast.CXFunctionIndex, inputs []*ast.CXArgument, outputs []*ast.CXArgument) {
-                // OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-                // Now an arena getter, site S1393.
-                fn:=actions.AST.GetFunctionFromArray(fnIdx)
+	func PreFunctionDeclaration (fnIdx ast.CXFunctionGid, inputs []*ast.CXArgument, outputs []*ast.CXArgument) {
+                fn:=actions.AST.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 		// adding inputs, outputs
 		for _, inp := range inputs {
 			fn.AddInput(actions.AST,inp)
@@ -84,10 +82,7 @@
 	// Now a pointer at rest, site S1397.
 	expressions []*ast.CXExpression
 
-        // OBJMODEL: CXFunctionGid, the parser value stack lives across Allocs, phase 4 #351.
-        // Now a pointer at rest, site S1398.
-        function *ast.CXFunction
-        functionIndex ast.CXFunctionIndex
+        functionIndex ast.CXFunctionGid
 }
 
 %token  <bool>          BOOLEAN_LITERAL
@@ -102,12 +97,12 @@
 %token  <f32>           FLOAT_LITERAL
 %token  <f64>           DOUBLE_LITERAL
 %token  <tok>           FUNC OP LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK IDENTIFIER
-                        VAR COMMA PERIOD COMMENT STRING_LITERAL PACKAGE IF ELSE FOR TYPSTRUCT STRUCT
+                        VAR GLOBAL COMMA PERIOD COMMENT STRING_LITERAL PACKAGE IF ELSE FOR TYPSTRUCT STRUCT
                         SEMICOLON NEWLINE
                         ASSIGN CASSIGN IMPORT RETURN GOTO GT_OP LT_OP GTEQ_OP LTEQ_OP EQUAL COLON NEW
                         EQUALWORD GTHANWORD LTHANWORD
                         GTHANEQ LTHANEQ UNEQUAL AND OR
-                        ADD_OP SUB_OP MUL_OP DIV_OP MOD_OP REF_OP NEG_OP AFFVAR
+                        ADD_OP SUB_OP MUL_OP DIV_OP MOD_OP REF_OP NEG_OP
                         PLUSPLUS MINUSMINUS REMAINDER LEFTSHIFT RIGHTSHIFT EXP
                         NOT
                         BITXOR_OP BITOR_OP BITCLEAR_OP
@@ -135,7 +130,7 @@
                         /* Debugging */
                         DSTACK DPROGRAM DSTATE
                         /* Affordances */
-                        AFF CAFF TAG INFER VALUE
+                        AFF TAG INFER VALUE
                         /* Pointers */
                         ADDR
 
@@ -276,7 +271,37 @@ package_declaration:
 import_declaration:
                 IMPORT STRING_LITERAL SEMICOLON
                 {
-			actions.DeclareImport(Program,$2, CurrentFile, lineNo)
+			actions.DeclareImportAt(Program,$2, CurrentFile, lineNo, $<column>2)
+                }
+        // The imports into scope of #487: import . "p", import file . "p",
+        // import (a, b) "p" and import file (a, b) "p".
+        |       IMPORT PERIOD STRING_LITERAL SEMICOLON
+                {
+			actions.DeclareImportScoped(Program, $3, "", 0, 0, nil, CurrentFile, $<line>3, $<column>3)
+                }
+        |       IMPORT IDENTIFIER PERIOD STRING_LITERAL SEMICOLON
+                {
+			actions.DeclareImportScoped(Program, $4, $2, $<line>2, $<column>2, nil, CurrentFile, $<line>4, $<column>4)
+                }
+        |       IMPORT LPAREN import_names RPAREN STRING_LITERAL SEMICOLON
+                {
+			actions.DeclareImportScoped(Program, $5, "", 0, 0, actions.ImportScopedNamesTake(), CurrentFile, $<line>5, $<column>5)
+                }
+        |       IMPORT IDENTIFIER LPAREN import_names RPAREN STRING_LITERAL SEMICOLON
+                {
+			actions.DeclareImportScoped(Program, $6, $2, $<line>2, $<column>2, actions.ImportScopedNamesTake(), CurrentFile, $<line>6, $<column>6)
+                }
+                ;
+
+import_names:
+                IDENTIFIER
+                {
+			actions.ImportScopedNamesTake()
+			actions.ImportScopedNamesAdd($1, $<line>1, $<column>1)
+                }
+        |       import_names COMMA IDENTIFIER
+                {
+			actions.ImportScopedNamesAdd($3, $<line>3, $<column>3)
                 }
                 ;
 
@@ -284,9 +309,7 @@ function_header:
                 FUNC IDENTIFIER
                 {
 			if pkg, err := Program.GetCurrentPackage(); err == nil {
-				// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-				// Now a constructor call, site S1400.
-				fn := ast.MakeFunction(Program, Program.CXProgramNameIntern($2), CurrentFile, $<line>2)
+				_, fn := ast.MakeFunction(Program, Program.CXProgramNameIntern($2), CurrentFile, $<line>2)
 				fn.FileColumn = $<column>2
 				_,fnIdx:=pkg.AddFunction(Program,fn)
                                 pkg.CurrentFunction=fnIdx
@@ -300,18 +323,14 @@ function_header:
                 {
 			receiver := actions.MethodReceiver(Program, $3)
 
-			receiverName := receiver[0].StructType.Name
+			receiverName := actions.MethodReceiverName(Program, receiver[0], CurrentFile, $<line>5, $<column>5)
 			methodName := Program.CXProgramNameIntern($5)
 
 			if pkg, err := Program.GetCurrentPackage(); err == nil {
-				// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-				// Now a constructor call, site S1401.
-				fn := ast.MakeFunction(Program, Program.CXProgramMethodNameIntern(receiverName, methodName), CurrentFile, $<line>5)
+				_, fn := ast.MakeFunction(Program, Program.CXProgramMethodNameIntern(receiverName, methodName), CurrentFile, $<line>5)
 				fn.FileColumn = $<column>5
 				_,fnIdx:=pkg.AddMethod(Program,fn,receiverName,methodName)
-                                // OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-                                // Now an arena getter, site S1402.
-                                newFn:=Program.GetFunctionFromArray(fnIdx)
+                                newFn:=Program.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
                                 newFn.AddInput(Program,receiver[0])
                                 
                                 pkg.CurrentFunction=fnIdx
@@ -335,6 +354,10 @@ function_parameters:
 function_results:
                 function_parameters
         |       LPAREN result_type_list RPAREN
+                {
+			$$ = actions.FunctionResultsUnnamed(Program, $2)
+                }
+        |       LPAREN result_type_list COMMA RPAREN
                 {
 			$$ = actions.FunctionResultsUnnamed(Program, $2)
                 }
@@ -369,6 +392,7 @@ function_declaration:
 parameter_type_list:
                 //parameter_list COMMA ELLIPSIS
 		parameter_list
+	|	parameter_list COMMA
                 ;
 
 parameter_list:
@@ -521,7 +545,7 @@ array_element:
                 {
 			$$ = actions.DeclarationSpecifiersStruct(Program,$3, types.Code($1).Name(), true, CurrentFile, $<line>1, $<column>1)
                 }
-        |       MUL_OP array_element
+        |       MUL_OP declaration_specifiers
                 {
 			$$ = actions.DeclarationSpecifiers($2, []types.Pointer{0}, constants.DECL_POINTER)
                 }
@@ -582,11 +606,18 @@ literal_element_list:
 	|       literal_element_list COMMA literal_element
                 ;
 
+// A list of elements or fields may end in a comma, which Go requires when the
+// closing brace is on the next line (https://go.dev/ref/spec#Semicolons).
+list_end:
+                RBRACE
+        |       COMMA RBRACE
+                ;
+
 // An elided element, {1, 2} or {x: 1}, takes the element type of its literal.
 literal_element:
 		assignment_expression
-        |       LBRACE literal_element_list RBRACE
-        |       LBRACE struct_literal_fields RBRACE
+        |       LBRACE literal_element_list list_end
+        |       LBRACE struct_literal_fields list_end
                 ;
 
 indexing_literal:
@@ -613,62 +644,49 @@ indexing_slice_literal:
 
 // expressions
 array_literal_expression:
-                indexing_literal IDENTIFIER LBRACE literal_element_list RBRACE
+                indexing_literal IDENTIFIER LBRACE literal_element_list list_end
         |       indexing_literal IDENTIFIER LBRACE RBRACE
-        |       indexing_literal type_specifier LBRACE literal_element_list RBRACE
+        |       indexing_literal type_specifier LBRACE literal_element_list list_end
         |       indexing_literal type_specifier LBRACE RBRACE
         ;
 
 slice_literal_expression:
-                indexing_slice_literal IDENTIFIER LBRACE literal_element_list RBRACE
+                indexing_slice_literal IDENTIFIER LBRACE literal_element_list list_end
         |       indexing_slice_literal IDENTIFIER LBRACE RBRACE
-        |       indexing_slice_literal type_specifier LBRACE literal_element_list RBRACE
+        |       indexing_slice_literal type_specifier LBRACE literal_element_list list_end
         |       indexing_slice_literal type_specifier LBRACE RBRACE
                 ;
 
-
-
-/* infer_action_arg: */
-/*                 MUL_OP GT_OP assignment_expression */
-/*         |       MUL_OP GT_OP MUL_OP */
-/*         ; */
-
-infer_action_arg:
-                IDENTIFIER
-        |       INT_LITERAL
-	|	type_specifier PERIOD IDENTIFIER
-        ;
-
-infer_action:
-                IDENTIFIER LPAREN infer_action_arg COMMA IDENTIFIER RPAREN
-	|	IDENTIFIER LPAREN infer_action_arg RPAREN
-	|	IDENTIFIER LPAREN infer_action RPAREN
-	|	IDENTIFIER LPAREN infer_action COMMA infer_action RPAREN
-        ;
-
-infer_actions:
-                infer_action SEMICOLON
-        |       infer_actions infer_action SEMICOLON
+// A literal of a type with a pointer or with both array and slice
+// dimensions, such as []*T or [2][]i32.
+compound_literal_type:
+                indexing_literal MUL_OP declaration_specifiers
+        |       indexing_literal LBRACK RBRACK declaration_specifiers
+        |       indexing_slice_literal MUL_OP declaration_specifiers
+        |       indexing_slice_literal indexing_literal array_element
                 ;
 
-/* infer_target: */
-/*                 IDENTIFIER LPAREN IDENTIFIER RPAREN SEMICOLON */
-/*         ; */
-
-/* infer_targets: */
-/*                 infer_target */
-/*         |       infer_targets infer_target */
-/*         ; */
-
-infer_clauses:
-        |       infer_actions
-        /* |       infer_targets */
+compound_literal_expression:
+                compound_literal_type LBRACE literal_element_list list_end
+        |       compound_literal_type LBRACE RBRACE
                 ;
+
+
+
+affordance_clause:
+                IDENTIFIER LPAREN IDENTIFIER RPAREN
+        |       VAR LPAREN IDENTIFIER RPAREN
+        ;
+
+affordance_clauses:
+        |       affordance_clauses affordance_clause
+        |       affordance_clauses SEMICOLON
+        ;
 
 primary_expression:
                 IDENTIFIER
         /* |       IDENTIFIER LBRACE struct_literal_fields RBRACE */
-        |       INFER LBRACE infer_clauses RBRACE
+        |       INFER LBRACE affordance_clauses RBRACE
         |       STRING_LITERAL
         |       BOOLEAN_LITERAL
         |       BYTE_LITERAL
@@ -684,6 +702,7 @@ primary_expression:
         |       LPAREN expression RPAREN
         |       array_literal_expression
         |       slice_literal_expression
+        |       compound_literal_expression
                 ;
 
 after_period:   type_specifier
@@ -699,14 +718,15 @@ postfix_expression:
         |       type_specifier PERIOD after_period
 	|       postfix_expression LPAREN RPAREN
 	|       postfix_expression LPAREN argument_expression_list RPAREN
+	|       postfix_expression LPAREN argument_expression_list COMMA RPAREN
 	|       postfix_expression INC_OP
         |       postfix_expression DEC_OP
         |       postfix_expression PERIOD IDENTIFIER
                 ;
 
 struct_literal_value:
-		IDENTIFIER LBRACE struct_literal_fields RBRACE
-        |       postfix_expression PERIOD IDENTIFIER LBRACE struct_literal_fields RBRACE
+		IDENTIFIER LBRACE struct_literal_fields list_end
+        |       postfix_expression PERIOD IDENTIFIER LBRACE struct_literal_fields list_end
         ;
 
 argument_expression_list:
@@ -782,6 +802,7 @@ postfix_nc:
         |       type_specifier PERIOD after_period
 	|       postfix_nc LPAREN RPAREN
 	|       postfix_nc LPAREN argument_expression_list RPAREN
+	|       postfix_nc LPAREN argument_expression_list COMMA RPAREN
 	|       postfix_nc INC_OP
         |       postfix_nc DEC_OP
         |       postfix_nc PERIOD IDENTIFIER
@@ -924,6 +945,17 @@ block_item_list:
 block_item:
         |       declaration
         |       statement
+        |       GLOBAL global_names
+                ;
+
+global_names:
+                global_name
+        |       global_names COMMA global_name
+                ;
+
+global_name:
+                IDENTIFIER
+        |       IDENTIFIER PERIOD IDENTIFIER
                 ;
 
 expression_statement:

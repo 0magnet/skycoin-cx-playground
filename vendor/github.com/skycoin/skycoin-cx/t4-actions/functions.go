@@ -33,6 +33,13 @@ type SymbolsData struct {
 	// escapedSlots the frame slots of their declarations.
 	escaped      map[stringpool.StringGid]bool
 	escapedSlots []escapeSlot
+	// shortDeclarationNew is whether the := being declared has declared a
+	// new name yet, see CXEXPR_SHORT_DECLARATION_SHARED.
+	shortDeclarationNew bool
+	// shortDeclarationFirst is the first name of that :=, where a := that
+	// declares nothing is reported.
+	shortDeclarationFirst ast.CXArgumentDebugGid
+	shortDeclarationOpen  bool
 }
 
 // FunctionHeader takes a function name ('fnName') and either creates the
@@ -49,23 +56,21 @@ type SymbolsData struct {
 //				   it's called on as the first argument.
 //	 nameLine, nameColumn - the position of the name, which tells a second
 //				   declaration of the name from the first, 0 when unknown.
-func FunctionHeader(prgrm *ast.CXProgram, fnName string, receiver []*ast.CXArgument, isMethod bool, nameLine int, nameColumn int) ast.CXFunctionIndex {
+func FunctionHeader(prgrm *ast.CXProgram, fnName string, receiver []*ast.CXArgument, isMethod bool, nameLine int, nameColumn int) ast.CXFunctionGid {
 	if isMethod {
 		receiver = MethodReceiver(prgrm, receiver)
 		if pkg, err := prgrm.GetCurrentPackage(); err == nil {
-			receiverName := receiver[0].StructType.Name
+			receiverName := MethodReceiverName(prgrm, receiver[0], CurrentFile, nameLine, nameColumn)
 			methodName := prgrm.CXProgramNameIntern(fnName)
 
 			if fnIdx, ok := pkg.Methods[ast.CXPackageMethodKey{CXPackageMethodKeyStruct: receiverName, CXPackageMethodKeyMethod: methodName}]; ok {
 				fnIdx = prgrm.FunctionDeclarationAt(fnIdx, CurrentFile, nameLine, nameColumn)
-				fn := prgrm.GetFunctionFromArray(fnIdx)
+				fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 				fn.AddInput(prgrm, receiver[0])
 				pkg.CurrentFunction = fnIdx
 				return fnIdx
 			} else {
-				// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-				// Now a constructor call, site S0723.
-				fn := ast.MakeFunction(prgrm, prgrm.CXProgramMethodNameIntern(receiverName, methodName), CurrentFile, LineNo)
+				_, fn := ast.MakeFunction(prgrm, prgrm.CXProgramMethodNameIntern(receiverName, methodName), CurrentFile, LineNo)
 				fn.AddInput(prgrm, receiver[0])
 				_, fnIdx := pkg.AddMethod(prgrm, fn, receiverName, methodName)
 				pkg.CurrentFunction = fnIdx
@@ -79,13 +84,11 @@ func FunctionHeader(prgrm *ast.CXProgram, fnName string, receiver []*ast.CXArgum
 		if pkg, err := prgrm.GetCurrentPackage(); err == nil {
 			fnNameGid := prgrm.CXProgramNameIntern(fnName)
 			if fn, err := prgrm.GetFunction(fnNameGid, pkg.Name); err == nil {
-				fnIdx := prgrm.FunctionDeclarationAt(ast.CXFunctionIndex(fn.Index), CurrentFile, nameLine, nameColumn)
+				fnIdx := prgrm.FunctionDeclarationAt(prgrm.CXProgramFunctionGid(fn), CurrentFile, nameLine, nameColumn)
 				pkg.CurrentFunction = fnIdx
 				return fnIdx
 			} else {
-				// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-				// Now a constructor call, site S0724.
-				fn := ast.MakeFunction(prgrm, fnNameGid, CurrentFile, LineNo)
+				_, fn := ast.MakeFunction(prgrm, fnNameGid, CurrentFile, LineNo)
 				_, fnIdx := pkg.AddFunction(prgrm, fn)
 				pkg.CurrentFunction = fnIdx
 
@@ -108,6 +111,20 @@ func MethodReceiver(prgrm *ast.CXProgram, receiver []*ast.CXArgument) []*ast.CXA
 		prgrm.ReleaseCXArgBuilder(extra)
 	}
 	return receiver[:1]
+}
+
+// MethodReceiverName is the struct name a method of receiver is declared
+// under. A receiver that is no struct gets a name of the method's position
+// that no identifier can spell, so its body still compiles and collides with
+// nothing. A type that is not a struct is an error, a missing one has its own.
+func MethodReceiverName(prgrm *ast.CXProgram, receiver *ast.CXArgument, file ast.SourceFileGid, line int, column int) stringpool.StringGid {
+	if receiver.StructType != nil {
+		return receiver.StructType.Name
+	}
+	if receiver.Type != types.INVALID {
+		prgrm.CXProgramCompileErrorAddDebug(ast.CompileErrorCodeMethodReceiverType, receiver.ArgDetails, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(ast.ArgumentFormattedType(prgrm, receiver))})
+	}
+	return prgrm.CXProgramNameIntern(fmt.Sprintf("*receiver%d:%d:%d", file, line, column))
 }
 
 // literalElementTypeCode is the error code of a literal element of the wrong
@@ -159,10 +176,8 @@ func FunctionResultsUnnamed(prgrm *ast.CXProgram, results []*ast.CXArgument) []*
 //		fnIdx - the index of the function in the main CXFunction array.
 //	 inputs - parameters to be added in the function as input.
 //	 outputs - parameters to be added in the function as output.
-func FunctionAddParameters(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, inputs, outputs []*ast.CXArgument) {
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0725.
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+func FunctionAddParameters(prgrm *ast.CXProgram, fnIdx ast.CXFunctionGid, inputs, outputs []*ast.CXArgument) {
+	fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 
 	fnInputs := fn.GetInputs(prgrm)
 	if len(fnInputs) != len(inputs) {
@@ -199,9 +214,7 @@ func isParseOp(prgrm *ast.CXProgram, expr *ast.CXExpression) bool {
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0729.
-	exprAtomicOpOperator := prgrm.GetFunctionFromArray(exprAtomicOp.Operator)
+	exprAtomicOpOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(exprAtomicOp.Operator)
 	if exprAtomicOpOperator != nil && exprAtomicOpOperator.AtomicOPCode > constants.START_PARSE_OPS && exprAtomicOpOperator.AtomicOPCode < constants.END_PARSE_OPS {
 		return true
 	}
@@ -213,12 +226,10 @@ func isParseOp(prgrm *ast.CXProgram, expr *ast.CXExpression) bool {
 // the expression `sa + sb` is not valid if they are struct instances.
 func CheckUndValidTypes(prgrm *ast.CXProgram, exprs []ast.CXExpression, currIndex int) {
 	expressionIdx := exprs[currIndex].Index
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0730.
-	expressionOperator := prgrm.GetFunctionFromArray(prgrm.CXAtomicOps[expressionIdx].Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(prgrm.CXAtomicOps[expressionIdx].Operator)
 	if expressionOperator != nil && ast.IsOperator(expressionOperator.AtomicOPCode) && !IsAllArgsBasicTypes(prgrm, &exprs[currIndex]) {
 		file, line := exprLine(prgrm, exprs, currIndex)
-		prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeOperatorArgumentTypes, file, line, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(ast.OpNames[expressionOperator.AtomicOPCode])})
+		prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeOperatorArgumentTypes, file, line, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(constants.OpcodeNameOf(expressionOperator.AtomicOPCode))})
 	}
 }
 
@@ -236,10 +247,8 @@ func CheckUndValidTypes(prgrm *ast.CXProgram, exprs []ast.CXExpression, currInde
 //				 and receiver).
 //	 fnIdx - the index of the function in the main CXFunction array.
 //	 params - function parameters to be processed.
-func ProcessFunctionParameters(prgrm *ast.CXProgram, symbolsData *SymbolsData, offset *types.Pointer, fnIdx ast.CXFunctionIndex, params []ast.CXTypeSignatureIndex) {
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0731.
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+func ProcessFunctionParameters(prgrm *ast.CXProgram, symbolsData *SymbolsData, offset *types.Pointer, fnIdx ast.CXFunctionGid, params []ast.CXTypeSignatureIndex) {
+	fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 
 	for _, paramIdx := range params {
 		UpdateSymbolsTable(prgrm, symbolsData, paramIdx, offset, false)
@@ -280,7 +289,7 @@ func ProcessFunctionParameters(prgrm *ast.CXProgram, symbolsData *SymbolsData, o
 //	 inputs - parameters to be added in the function as input.
 //	 outputs - parameters to be added in the function as output.
 //	 exprs - expression statements inside the function.
-func FunctionDeclaration(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, inputs, outputs []*ast.CXArgument, exprs []ast.CXExpression) {
+func FunctionDeclaration(prgrm *ast.CXProgram, fnIdx ast.CXFunctionGid, inputs, outputs []*ast.CXArgument, exprs []ast.CXExpression) {
 	// getting offset to use by statements (excluding inputs, outputs and receiver).
 	var offset types.Pointer
 
@@ -304,16 +313,16 @@ func FunctionDeclaration(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, inputs
 	}
 
 	pkg.CurrentFunction = fnIdx
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0735.
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+	fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 
+	scopeGlobalsCheckBegin(fnIdx)
 	symbolsData.escaped, exprs = escapeFunction(prgrm, fn, inputs, outputs, exprs)
 	FunctionAddParameters(prgrm, fnIdx, inputs, outputs)
 	ProcessShortCircuitJumps(prgrm, exprs)
 	ProcessGoTos(prgrm, exprs)
 	ProcessLoopJumpsOutsideLoop(prgrm, exprs)
 	AddExprsToFunction(prgrm, fnIdx, exprs)
+	fn = prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 	ProcessFunctionParameters(prgrm, symbolsData, &offset, fnIdx, fn.GetInputs(prgrm))
 	ProcessFunctionParameters(prgrm, symbolsData, &offset, fnIdx, fn.GetOutputs(prgrm))
 
@@ -360,6 +369,7 @@ func FunctionDeclaration(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, inputs
 			continue
 		}
 
+		functionReferenceInputsResolve(prgrm, exprAtomicOp)
 		if !CheckTypes(prgrm, fn.Expressions, i) {
 			symbolsScopeClose(symbolsData, expr)
 			continue
@@ -372,6 +382,7 @@ func FunctionDeclaration(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, inputs
 		symbolsScopeClose(symbolsData, expr)
 	}
 
+	fn = prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 	for _, slot := range symbolsData.escapedSlots {
 		gcRootAddEscapeSlot(fn, slot.escapeSlotOffset)
 	}
@@ -379,6 +390,7 @@ func FunctionDeclaration(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, inputs
 	fn.Size = offset
 
 	releaseFunctionSymbols(prgrm, symbolsData)
+	scopeGlobalsEnd(prgrm)
 }
 
 // symbolsScopeClose closes the scopes that expr ends.
@@ -403,25 +415,23 @@ func ProcessTypedOperator(prgrm *ast.CXProgram, exprs []ast.CXExpression, currIn
 		panic(err)
 	}
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0738.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	if expressionOperator == nil {
 		return
 	}
 	if ast.IsOperator(expressionOperator.AtomicOPCode) {
 		atomicType := operatorOperandType(prgrm, expression.GetInputs(prgrm)[0])
 
-		typedOp := ast.GetTypedOperator(atomicType, expressionOperator.AtomicOPCode)
-		if typedOp == nil {
-			if ast.OpcodeHandlers[expressionOperator.AtomicOPCode] == nil {
+		typedOp := constants.OpcodeOperatorOf(atomicType, expressionOperator.AtomicOPCode)
+		if typedOp == 0 {
+			if !constants.OpcodeHandled(expressionOperator.AtomicOPCode) {
 				file, line := exprLine(prgrm, exprs, currIndex)
-				prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeOperatorArgumentTypes, file, line, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(ast.OpNames[expressionOperator.AtomicOPCode])})
+				prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeOperatorArgumentTypes, file, line, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(constants.OpcodeNameOf(expressionOperator.AtomicOPCode))})
 			}
 			return
 		}
 
-		expressionOperator.AtomicOPCode = typedOp.AtomicOPCode
+		expressionOperator.AtomicOPCode = typedOp
 
 	}
 }
@@ -507,9 +517,7 @@ func checkOperatorOperands(prgrm *ast.CXProgram, exprs []ast.CXExpression, currI
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0741.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	if expressionOperator == nil || !ast.IsOperator(expressionOperator.AtomicOPCode) || len(expression.GetInputs(prgrm)) == 0 {
 		return
 	}
@@ -558,7 +566,7 @@ func checkOperatorResultType(prgrm *ast.CXProgram, exprs []ast.CXExpression, cur
 	if err != nil {
 		panic(err)
 	}
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	if expressionOperator == nil || !ast.IsOperator(expressionOperator.AtomicOPCode) || ast.IsComparisonOperator(expressionOperator.AtomicOPCode) {
 		return
 	}
@@ -572,7 +580,7 @@ func checkOperatorResultType(prgrm *ast.CXProgram, exprs []ast.CXExpression, cur
 		return
 	}
 	inputTypeSig := prgrm.GetCXTypeSignatureFromArray(inputs[0])
-	if typeSignatureUndefined(prgrm, inputTypeSig) || ast.GetTypedOperator(operatorOperandType(prgrm, inputs[0]), expressionOperator.AtomicOPCode) == nil {
+	if typeSignatureUndefined(prgrm, inputTypeSig) || constants.OpcodeOperatorOf(operatorOperandType(prgrm, inputs[0]), expressionOperator.AtomicOPCode) == 0 {
 		return
 	}
 	inputType := ast.GetFormattedType(prgrm, inputTypeSig)
@@ -611,9 +619,7 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0744.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	if expressionOperator == nil {
 		// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 		// Now an arena getter, site S0745.
@@ -637,7 +643,7 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 		}
 
 		if op, err := prgrm.GetFunction(opName, opPkg.Name); err == nil && fieldless {
-			expression.Operator = ast.CXFunctionIndex(op.Index)
+			expression.Operator = prgrm.CXProgramFunctionGid(op)
 		} else if fieldless {
 			// then it's not a possible method call
 			prgrm.CXProgramCompileErrorAdd(ast.CompileErrorCodeMessage, CurrentFile, LineNo, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(err.Error())})
@@ -676,9 +682,7 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 		if err != nil {
 			panic(err)
 		}
-		// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-		// Now an arena getter, site S0751.
-		inpExprAtomicOpOperator := prgrm.GetFunctionFromArray(inpExprAtomicOp.Operator)
+		inpExprAtomicOpOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(inpExprAtomicOp.Operator)
 
 		inpExprCXLine, err := prgrm.GetPreviousCXLine(args, i)
 		if err != nil {
@@ -724,6 +728,9 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 		} else {
 			// then it's a function call
 			outputGiven := len(inpExprAtomicOp.GetOutputs(prgrm)) > 0
+			if !outputGiven && len(inpExprAtomicOpOperator.GetOutputs(prgrm)) == 0 {
+				inpExprAtomicOpOperator = outputlessCallInvalidate(prgrm, inpExprAtomicOp, inpExprAtomicOpOperator, CurrentFile, inpExprCXLine.LineNumber)
+			}
 			if len(inpExprAtomicOp.GetOutputs(prgrm)) < 1 {
 				var out *ast.CXArgument
 
@@ -801,21 +808,23 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 							outTypeSig.Offset = inpExprAtomicOpInputTypeSig.Offset
 
 							typeSigIdx = outTypeSig.Index
+						} else if inpExprAtomicOpInputTypeSig.Type == ast.TYPE_SLICE_ATOMIC {
+							// A whole slice result, as append(f(), v) passes it.
+							_, outTypeSig := prgrm.AllocCXTypeSignatureCopy(inpExprAtomicOpInputTypeSig)
+							outTypeSig.Name = generateTempVarName(prgrm, constants.LOCAL_PREFIX)
+							outTypeSig.Package = inpExprAtomicOp.Package
+
+							typeSigIdx = outTypeSig.Index
 						} else {
 							panic("type is not known")
 						}
 
 					} else {
 						_, out = ast.MakeArgument(prgrm, generateTempVarName(prgrm, constants.LOCAL_PREFIX), CurrentFile, inpExprCXLine.LineNumber)
-						out.SetType(inpExprAtomicOpOperatorOutputArg.Type)
-						out.DeclarationSpecifiers = inpExprAtomicOpOperatorOutputArg.DeclarationSpecifiers
-						if ast.IsTypeArrayAtomic(inpExprAtomicOpOperatorOutputArg) {
-							out.Lengths = inpExprAtomicOpOperatorOutputArg.Lengths
-						}
+						argumentTypeCopy(out, inpExprAtomicOpOperatorOutputArg)
+						out.PassBy = constants.PASSBY_VALUE
 
-						out.StructType = inpExprAtomicOpOperatorOutputArg.StructType
-
-						if inpExprAtomicOpOperatorOutputArg.StructType != nil {
+						if specs := inpExprAtomicOpOperatorOutputArg.DeclarationSpecifiers; inpExprAtomicOpOperatorOutputArg.StructType != nil && (len(specs) < 2 || specs[1] != constants.DECL_POINTER) {
 							// OBJMODEL: state.CXPackageMng.CXPackageGet(gid), phase 5 #362.
 							// Now an arena getter, site S0768.
 							inpExprPkg, err := prgrm.GetPackageFromArray(inpExprAtomicOp.Package)
@@ -825,12 +834,7 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 							if strct, err := inpExprPkg.GetStruct(prgrm, inpExprAtomicOpOperatorOutputArg.StructType.Name); err == nil {
 								out.Size = strct.GetStructSize(prgrm)
 							}
-						} else {
-							out.Size = inpExprAtomicOpOperatorOutputArg.Size
 						}
-
-						out.Type = inpExprAtomicOpOperatorOutputArg.Type
-						out.PointerTargetType = inpExprAtomicOpOperatorOutputArg.PointerTargetType
 						out.PreviouslyDeclared = true
 						out.Package = inpExprAtomicOp.Package
 
@@ -843,6 +847,15 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 					_, newTypeSig := prgrm.AllocCXTypeSignatureCopy(inpExprAtomicOpOperatorOutputTypeSig)
 					newTypeSig.Name = generateTempVarName(prgrm, constants.LOCAL_PREFIX)
 					newTypeSig.Package = inpExprAtomicOp.Package
+					if newTypeSig.Type == ast.TYPE_SLICE_ATOMIC && newTypeSig.ArgDetails == ast.CXArgumentDebugGidNil {
+						// A native []T result has no position, so it takes the call's.
+						argDetailsGid := prgrm.CxIrState.CXArgumentDebugMng.CXArgumentDebugAlloc()
+						argDetails := prgrm.CxIrState.CXArgumentDebugMng.CXArgumentDebugGet(argDetailsGid)
+						argDetails.FileName = CurrentFile
+						argDetails.FileLine = inpExprCXLine.LineNumber
+						argDetails.FileColumn = prgrm.CXProgramCompileErrorColumn(argDetails.FileName, argDetails.FileLine)
+						newTypeSig.ArgDetails = argDetailsGid
+					}
 					newTypeSigIdx := newTypeSig.Index
 
 					inpExprAtomicOp.AddOutput(prgrm, newTypeSigIdx)
@@ -855,7 +868,7 @@ func FunctionCall(prgrm *ast.CXProgram, exprs []ast.CXExpression, arguments [][]
 
 					inpExprAtomicOp.AddOutput(prgrm, newTypeSigIdx)
 					expression.AddInput(prgrm, newTypeSigIdx)
-				} else if inpExprAtomicOpOperatorOutputTypeSig.Type == ast.TYPE_STRUCT {
+				} else if inpExprAtomicOpOperatorOutputTypeSig.Type == ast.TYPE_STRUCT || inpExprAtomicOpOperatorOutputTypeSig.Type == ast.TYPE_POINTER_STRUCT || typeSignatureCollection(inpExprAtomicOpOperatorOutputTypeSig) {
 					_, newTypeSig := prgrm.AllocCXTypeSignatureCopy(inpExprAtomicOpOperatorOutputTypeSig)
 					newTypeSig.Name = generateTempVarName(prgrm, constants.LOCAL_PREFIX)
 					newTypeSig.Package = inpExprAtomicOp.Package
@@ -949,9 +962,7 @@ func ProcessOperatorExpression(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0782.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 
 	if expr.IsUndType(prgrm) {
 		for _, outputIdx := range expression.GetOutputs(prgrm) {
@@ -995,6 +1006,41 @@ func ProcessOperatorExpression(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 			}
 		}
 	}
+}
+
+// sliceResultTemporaryTypeAdopt gives the temporary result of a []und
+// built-in, as in len(append(s, v)), the slice type of its resolved input s.
+func sliceResultTemporaryTypeAdopt(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator) {
+	operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
+	if operator == nil || !operator.IsBuiltIn() || len(expression.GetInputs(prgrm)) == 0 || len(expression.GetOutputs(prgrm)) != 1 {
+		return
+	}
+	operatorOutputs := operator.GetOutputs(prgrm)
+	if len(operatorOutputs) != 1 {
+		return
+	}
+	operatorOutput := prgrm.GetCXTypeSignatureFromArray(operatorOutputs[0])
+	if operatorOutput.Type != ast.TYPE_CXARGUMENT_DEPRECATE {
+		return
+	}
+	operatorOutputArg := prgrm.GetCXArgFromArray(ast.CXArgumentIndex(operatorOutput.Meta))
+	if operatorOutputArg.Type != types.UNDEFINED || !hasDeclSpec(operatorOutputArg, constants.DECL_SLICE) {
+		return
+	}
+	output := prgrm.GetCXTypeSignatureFromArray(expression.GetOutputs(prgrm)[0])
+	input := prgrm.GetCXTypeSignatureFromArray(expression.GetInputs(prgrm)[0])
+	if output.Type != ast.TYPE_CXARGUMENT_DEPRECATE || !IsTempVar(prgrm, output.Name) {
+		return
+	}
+	// The type x := s would give, so m[0] of an m [][]i32 is a []i32.
+	t, ok := shortDeclarationCollectionValue(prgrm, input, false)
+	if !ok || t.specs[len(t.specs)-1] != constants.DECL_SLICE {
+		return
+	}
+	out := prgrm.GetCXArgFromArray(ast.CXArgumentIndex(output.Meta))
+	out.Type, out.PointerTargetType, out.Size, out.StructType = t.typ, t.pointerTargetType, t.size, t.structType
+	out.DeclarationSpecifiers, out.Lengths = t.specs, t.lengths
+	out.PassBy = constants.PASSBY_VALUE
 }
 
 // ProcessPointerStructs checks and processes if any args is a pointer struct.
@@ -1095,9 +1141,7 @@ func processTestExpression(prgrm *ast.CXProgram, exprs []ast.CXExpression, currI
 		panic(err)
 	}
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0796.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 
 	if expressionOperator != nil {
 		opCode := expressionOperator.AtomicOPCode
@@ -1115,7 +1159,7 @@ func processTestExpression(prgrm *ast.CXProgram, exprs []ast.CXExpression, currI
 			inp2Type = ast.GetFormattedType(prgrm, expressionInputSecondTypeSig)
 			if inp1Type != inp2Type {
 				file, line := exprLine(prgrm, exprs, currIndex)
-				prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeInputTypesNotEqual, file, line, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(ast.OpNames[expressionOperator.AtomicOPCode]), prgrm.CXProgramCompileErrorText(inp1Type), prgrm.CXProgramCompileErrorText(inp2Type)})
+				prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeInputTypesNotEqual, file, line, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(constants.OpcodeNameOf(expressionOperator.AtomicOPCode)), prgrm.CXProgramCompileErrorText(inp1Type), prgrm.CXProgramCompileErrorText(inp2Type)})
 			}
 		}
 	}
@@ -1151,10 +1195,8 @@ func checkIndexType(prgrm *ast.CXProgram, idxIdx ast.CXTypeSignatureIndex) {
 //	 args - the expression arguments.
 //	 expr - the expression.
 //	 isInput - true if args are input arguments, false if they are output args.
-func ProcessExpressionArguments(prgrm *ast.CXProgram, symbolsData *SymbolsData, offset *types.Pointer, fnIdx ast.CXFunctionIndex, args []ast.CXTypeSignatureIndex, expr *ast.CXExpression, isInput bool) {
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0800.
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+func ProcessExpressionArguments(prgrm *ast.CXProgram, symbolsData *SymbolsData, offset *types.Pointer, fnIdx ast.CXFunctionGid, args []ast.CXTypeSignatureIndex, expr *ast.CXExpression, isInput bool) {
+	fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 
 	for _, typeSignatureIdx := range args {
 		// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
@@ -1177,6 +1219,7 @@ func ProcessExpressionArguments(prgrm *ast.CXProgram, symbolsData *SymbolsData, 
 
 		if !isInput {
 			ProcessOperatorExpression(prgrm, expr)
+			sliceResultTemporaryTypeAdopt(prgrm, &prgrm.CXAtomicOps[expr.Index])
 		}
 
 		// TODO: Check how to remove PreviouslyDeclared field
@@ -1221,6 +1264,8 @@ func ProcessExpressionArguments(prgrm *ast.CXProgram, symbolsData *SymbolsData, 
 }
 
 // isPointerAdded checks if `sym` has already been added to `fn.ListOfPointers`.
+// GCREACH: reads the GC root table ListOfPointers,
+// see docs/GarbageCollector.md.
 func isPointerAdded(prgrm *ast.CXProgram, fn *ast.CXFunction, sym *ast.CXArgument) (found bool) {
 	for _, ptr := range fn.ListOfPointers {
 		if sym.Name == ptr.Name {
@@ -1256,6 +1301,9 @@ func isPointerAdded(prgrm *ast.CXProgram, fn *ast.CXFunction, sym *ast.CXArgumen
 //		prgrm - a CXProgram that contains all the data and arrays of the program.
 //		fn - the function the sym belongs.
 //	 typeSigIdx - the index of the type signature from the main CXTypeSignature array.
+//
+// GCREACH: adds GC roots to ListOfPointers,
+// see docs/GarbageCollector.md.
 func AddPointer(prgrm *ast.CXProgram, fn *ast.CXFunction, typeSigIdx ast.CXTypeSignatureIndex) {
 	// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 	// Now an arena getter, site S0804.
@@ -1309,6 +1357,32 @@ func AddPointer(prgrm *ast.CXProgram, fn *ast.CXFunction, typeSigIdx ast.CXTypeS
 	}
 }
 
+// fieldPointerDeref dereferences sym once more when its explicit
+// dereferences and indexes leave a pointer to a struct, as (*pp).f does for
+// a **T pp and (*s[0]).f for a []**T s.
+func fieldPointerDeref(sym *ast.CXArgument, arg *ast.CXArgument) {
+	if arg.StructType == nil || !hasDerefOp(sym, constants.DEREF_POINTER) {
+		return
+	}
+	specs := append([]int(nil), arg.DeclarationSpecifiers...)
+	for _, deref := range sym.DereferenceOperations {
+		if len(specs) == 0 {
+			return
+		}
+		top := specs[len(specs)-1]
+		switch {
+		case deref == constants.DEREF_POINTER && top == constants.DECL_POINTER:
+		case (deref == constants.DEREF_ARRAY || deref == constants.DEREF_SLICE) && (top == constants.DECL_ARRAY || top == constants.DECL_SLICE):
+		default:
+			return
+		}
+		specs = specs[:len(specs)-1]
+	}
+	if len(specs) == 2 && specs[0] == constants.DECL_STRUCT && specs[1] == constants.DECL_POINTER {
+		sym.DereferenceOperations = append(sym.DereferenceOperations, constants.DEREF_POINTER)
+	}
+}
+
 // CheckRedeclared checks if `expr` represents a variable declaration and then checks if an
 // instance of that variable has already been declared.
 //
@@ -1332,9 +1406,7 @@ func CheckRedeclared(prgrm *ast.CXProgram, symbolsData *SymbolsData, expr *ast.C
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0812.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 
 	if expressionOperator == nil && len(expression.GetOutputs(prgrm)) > 0 && len(expression.GetInputs(prgrm)) == 0 {
 		assert.AssertInvariantTrue(len(symbolsData.symbolsIndex) > 0, "CheckRedeclared: symbol scope stack is empty")
@@ -1348,8 +1420,24 @@ func CheckRedeclared(prgrm *ast.CXProgram, symbolsData *SymbolsData, expr *ast.C
 		}
 
 		_, found := (symbolsData.symbolsIndex)[lastIdx][SymbolsDataKey{SymbolsDataKeyPackage: symPkg.Name, SymbolsDataKeyName: typeSig.Name}]
-		if found {
-			prgrm.CXProgramCompileErrorAddDebug(ast.CompileErrorCodeRedeclared, typeSig.ArgDetails, ast.CompileErrorOperands{int64(typeSig.Name)})
+		switch expr.ExpressionType {
+		case ast.CXEXPR_SHORT_DECLARATION_SHARED, ast.CXEXPR_SHORT_DECLARATION_SHARED_LAST:
+			// https://go.dev/ref/spec#Short_variable_declarations
+			if !symbolsData.shortDeclarationOpen {
+				symbolsData.shortDeclarationFirst, symbolsData.shortDeclarationOpen = typeSig.ArgDetails, true
+			}
+			symbolsData.shortDeclarationNew = symbolsData.shortDeclarationNew || !found
+			if expr.ExpressionType == ast.CXEXPR_SHORT_DECLARATION_SHARED_LAST {
+				if !symbolsData.shortDeclarationNew {
+					prgrm.CXProgramCompileErrorAddDebug(ast.CompileErrorCodeShortDeclarationNoNew, symbolsData.shortDeclarationFirst, ast.CompileErrorOperands{})
+				}
+				symbolsData.shortDeclarationNew = false
+				symbolsData.shortDeclarationOpen = false
+			}
+		default:
+			if found {
+				prgrm.CXProgramCompileErrorAddDebug(ast.CompileErrorCodeRedeclared, typeSig.ArgDetails, ast.CompileErrorOperands{int64(typeSig.Name)})
+			}
 		}
 	}
 }
@@ -1366,13 +1454,11 @@ func ProcessGoTos(prgrm *ast.CXProgram, exprs []ast.CXExpression) {
 		if err != nil {
 			panic(err)
 		}
-		// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-		// Now an arena getter, site S0814.
-		expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+		expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 		expressionOperatorInputs := expressionOperator.GetInputs(prgrm)
 		expressionOperatorOutputs := expressionOperator.GetOutputs(prgrm)
 
-		opGotoFn := ast.Natives[constants.OP_GOTO]
+		opGotoFn := ast.NativeFunctionOf(prgrm, constants.OP_GOTO)
 		isOpGoto := false
 		if expressionOperator != nil && expressionOperator.AtomicOPCode == opGotoFn.AtomicOPCode && len(expressionOperatorInputs) == len(opGotoFn.Inputs) && len(expressionOperatorOutputs) == len(opGotoFn.Outputs) {
 			isOpGoto = true
@@ -1403,10 +1489,8 @@ func ProcessGoTos(prgrm *ast.CXProgram, exprs []ast.CXExpression) {
 }
 
 // AddExprsToFunction add all expressions to the function.
-func AddExprsToFunction(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, exprs []ast.CXExpression) {
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0815.
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+func AddExprsToFunction(prgrm *ast.CXProgram, fnIdx ast.CXFunctionGid, exprs []ast.CXExpression) {
+	fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 	for _, expr := range exprs {
 		fn.AddExpression(prgrm, &expr)
 	}
@@ -1415,7 +1499,7 @@ func AddExprsToFunction(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, exprs [
 // expressionOperatorName is the name of a built-in operator or a function.
 func expressionOperatorName(prgrm *ast.CXProgram, operator *ast.CXFunction) string {
 	if operator.IsBuiltIn() {
-		return ast.OpNames[operator.AtomicOPCode]
+		return operator.BuiltInName()
 	}
 	return prgrm.CXProgramNameText(operator.Name)
 }
@@ -1427,9 +1511,7 @@ func checkMatchParamTypes(prgrm *ast.CXProgram, expr *ast.CXExpression, expected
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0817.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 
 	for i, expectedTypeSigIdx := range expected {
 		var receivedType, expectedType string
@@ -1446,6 +1528,10 @@ func checkMatchParamTypes(prgrm *ast.CXProgram, expr *ast.CXExpression, expected
 			expectedPointer = expectedArg.IsPointer()
 			expectedUndefined = expectedArg.Type == types.UNDEFINED
 			expectedSlice = expectedUndefined && hasDeclSpec(expectedArg, constants.DECL_SLICE)
+			if expectedArg.Type == types.FUNC {
+				// functionReferenceInputsResolve checked it and made it an i64.
+				continue
+			}
 		}
 		expectedType = ast.GetFormattedType(prgrm, expectedTypeSig)
 
@@ -1453,6 +1539,9 @@ func checkMatchParamTypes(prgrm *ast.CXProgram, expr *ast.CXExpression, expected
 		// Now an arena getter, site S0821.
 		receivedTypeSig := prgrm.GetCXTypeSignatureFromArray(received[i])
 		receivedType = ast.GetFormattedType(prgrm, receivedTypeSig)
+		if isInputs && !(expr.IsMethodCall() && i == 0) {
+			receivedType = valueFormattedType(prgrm, receivedTypeSig)
+		}
 
 		// ProcessMethodCall passes a receiver by reference to a pointer receiver.
 		if isInputs && expr.IsMethodCall() && i == 0 && (expectedPointer || expectedTypeSig.Type == ast.TYPE_POINTER_STRUCT) && !strings.HasPrefix(receivedType, "*") {
@@ -1500,7 +1589,7 @@ func checkMatchParamTypes(prgrm *ast.CXProgram, expr *ast.CXExpression, expected
 			// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 			// Now an arena getter, site S0824.
 			expressionInputTypeSig := prgrm.GetCXTypeSignatureFromArray(expression.GetInputs(prgrm)[0])
-			inpType = ast.GetFormattedType(prgrm, expressionInputTypeSig)
+			inpType = valueFormattedType(prgrm, expressionInputTypeSig)
 
 			var expressionOutputArg *ast.CXArgument
 			expressionOutputTypeSigName := expressionOutputTypeSig.Name
@@ -1532,7 +1621,7 @@ func checkMatchParamTypes(prgrm *ast.CXProgram, expr *ast.CXExpression, expected
 
 // checkMatchExprNumOfInputs records a call with a wrong number of inputs and
 // returns false.
-func checkMatchExprNumOfInputs(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator, expressionOperatorInputs []ast.CXTypeSignatureIndex, opName string, exprCXLine *ast.CXLine, builtIn bool) bool {
+func checkMatchExprNumOfInputs(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator, expressionOperatorInputs []ast.CXTypeSignatureIndex, exprCXLine *ast.CXLine, builtIn bool) bool {
 	// checking if number of inputs is not the same as the required number of inputs
 	if len(expression.GetInputs(prgrm)) == len(expressionOperatorInputs) {
 		return true
@@ -1563,16 +1652,16 @@ func checkMatchExprNumOfInputs(prgrm *ast.CXProgram, expression *ast.CXAtomicOpe
 	}
 
 	// then we need to be strict in the number of inputs
-	prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeOperatorInputCount, exprCXLine.FileName, exprCXLine.LineNumber, exprCXLine.LineColumn, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(opName), int64(len(expressionOperatorInputs)), int64(len(expression.GetInputs(prgrm)))})
+	prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeOperatorInputCount, exprCXLine.FileName, exprCXLine.LineNumber, exprCXLine.LineColumn, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(expression.GetOperatorName(prgrm)), int64(len(expressionOperatorInputs)), int64(len(expression.GetInputs(prgrm)))})
 	return false
 }
 
 // checkMatchExprNumOfOutputs records a call with a wrong number of receivers
 // and returns false.
-func checkMatchExprNumOfOutputs(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator, expressionOperatorOutputs []ast.CXTypeSignatureIndex, opName string, exprCXLine *ast.CXLine) bool {
+func checkMatchExprNumOfOutputs(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator, expressionOperatorOutputs []ast.CXTypeSignatureIndex, exprCXLine *ast.CXLine) bool {
 	// checking if number of outputs is not the same as the required number of outputs
 	if len(expression.GetOutputs(prgrm)) != len(expressionOperatorOutputs) {
-		prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeOperatorOutputCount, exprCXLine.FileName, exprCXLine.LineNumber, exprCXLine.LineColumn, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(opName), int64(len(expressionOperatorOutputs)), int64(len(expression.GetOutputs(prgrm)))})
+		prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeOperatorOutputCount, exprCXLine.FileName, exprCXLine.LineNumber, exprCXLine.LineColumn, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(expression.GetOperatorName(prgrm)), int64(len(expressionOperatorOutputs)), int64(len(expression.GetOutputs(prgrm)))})
 		return false
 	}
 	return true
@@ -1586,18 +1675,15 @@ func CheckTypes(prgrm *ast.CXProgram, exprs []ast.CXExpression, currIndex int) b
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0829.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	exprCXLine, _ := prgrm.GetPreviousCXLine(exprs, currIndex)
 
 	if expressionOperator != nil {
-		opName := expression.GetOperatorName(prgrm)
 		expressionOperatorInputs := expressionOperator.GetInputs(prgrm)
 		expressionOperatorOutputs := expressionOperator.GetOutputs(prgrm)
 
 		// A call with the wrong inputs reports that alone, not its receivers too.
-		if !checkMatchExprNumOfInputs(prgrm, expression, expressionOperatorInputs, opName, exprCXLine, expressionOperator.IsBuiltIn()) || !checkMatchExprNumOfOutputs(prgrm, expression, expressionOperatorOutputs, opName, exprCXLine) {
+		if !checkMatchExprNumOfInputs(prgrm, expression, expressionOperatorInputs, exprCXLine, expressionOperator.IsBuiltIn()) || !checkMatchExprNumOfOutputs(prgrm, expression, expressionOperatorOutputs, exprCXLine) {
 			return false
 		}
 	}
@@ -1692,13 +1778,11 @@ func ProcessStringAssignment(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0837.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	expressionOperatorInputs := expressionOperator.GetInputs(prgrm)
 	expressionOperatorOutputs := expressionOperator.GetOutputs(prgrm)
 
-	opIdentFn := ast.Natives[constants.OP_IDENTITY]
+	opIdentFn := ast.NativeFunctionOf(prgrm, constants.OP_IDENTITY)
 	isOpIdent := false
 	if expressionOperator != nil && expressionOperator.AtomicOPCode == opIdentFn.AtomicOPCode && len(expressionOperatorInputs) == len(opIdentFn.Inputs) && len(expressionOperatorOutputs) == len(opIdentFn.Outputs) {
 		isOpIdent = true
@@ -1709,7 +1793,7 @@ func ProcessStringAssignment(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 			// Now an arena getter, site S0838.
 			output := prgrm.GetCXTypeSignatureFromArray(outputIdx)
 
-			// Only a CXArgument can hold a str or aff value, typed signatures are never strings.
+			// Only a CXArgument can hold a str value, typed signatures are never strings.
 			if output.Type != ast.TYPE_CXARGUMENT_DEPRECATE {
 				continue
 			}
@@ -1731,8 +1815,8 @@ func ProcessStringAssignment(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 				out = out.GetAssignmentElement(prgrm)
 				inp := expressionInputArg.GetAssignmentElement(prgrm)
 
-				if (out.Type == types.STR || out.Type == types.AFF) && out.Name != stringpool.StringGidNil &&
-					(inp.Type == types.STR || inp.Type == types.AFF) && inp.Name != stringpool.StringGidNil {
+				if out.Type == types.STR && out.Name != stringpool.StringGidNil &&
+					inp.Type == types.STR && inp.Name != stringpool.StringGidNil {
 					out.PassBy = constants.PASSBY_VALUE
 				}
 			}
@@ -1791,8 +1875,13 @@ func ProcessShortDeclaration(prgrm *ast.CXProgram, expr *ast.CXExpression, expre
 	// process short declaration
 	if len(expression.GetOutputs(prgrm)) > 0 && len(expression.GetInputs(prgrm)) > 0 && expressionOutputArgType == types.IDENTIFIER && !expr.IsStructLiteral() && !isParseOp(prgrm, expr) {
 		prevExpression, err := prgrm.GetPreviousCXAtomicOpFromExpressions(expressions, idx-1)
-		// An undeclared target has no declaration before it, and was reported already.
+		// An undeclared target, reported already, has no declaration of its name
+		// before it, though the expression before it may declare another name.
 		if err != nil || len(prevExpression.GetOutputs(prgrm)) == 0 {
+			return
+		}
+		prevName := prgrm.GetCXTypeSignatureFromArray(prevExpression.GetOutputs(prgrm)[0]).Name
+		if StripNameNumber(prgrm, prevName) != StripNameNumber(prgrm, prgrm.GetCXTypeSignatureFromArray(expression.GetOutputs(prgrm)[0]).Name) {
 			return
 		}
 
@@ -1801,9 +1890,7 @@ func ProcessShortDeclaration(prgrm *ast.CXProgram, expr *ast.CXExpression, expre
 		var argStructType *ast.CXStruct
 		if expr.IsMethodCall() {
 
-			// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-			// Now an arena getter, site S0845.
-			expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+			expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 			expressionOperatorOutputs := expressionOperator.GetOutputs(prgrm)
 			if len(expressionOperatorOutputs) == 0 {
 				return
@@ -1832,6 +1919,9 @@ func ProcessShortDeclaration(prgrm *ast.CXProgram, expr *ast.CXExpression, expre
 			// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 			// Now an arena getter, site S0848.
 			expressionInputTypeSig := prgrm.GetCXTypeSignatureFromArray(expression.GetInputs(prgrm)[0])
+			if t, ok := shortDeclarationPointerType(prgrm, expressionInputTypeSig); ok && shortDeclarationCollectionSet(prgrm, prevExpression, expression, t, offset) {
+				return
+			}
 			if t, ok := shortDeclarationCollectionType(prgrm, expressionInputTypeSig); ok && shortDeclarationCollectionSet(prgrm, prevExpression, expression, t, offset) {
 				return
 			}
@@ -2006,13 +2096,11 @@ func ProcessSliceAssignment(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0862.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	expressionOperatorInputs := expressionOperator.GetInputs(prgrm)
 	expressionOperatorOutputs := expressionOperator.GetOutputs(prgrm)
 
-	opIdentFn := ast.Natives[constants.OP_IDENTITY]
+	opIdentFn := ast.NativeFunctionOf(prgrm, constants.OP_IDENTITY)
 	isOpIdent := false
 	if expressionOperator != nil && expressionOperator.AtomicOPCode == opIdentFn.AtomicOPCode && len(expressionOperatorInputs) == len(opIdentFn.Inputs) && len(expressionOperatorOutputs) == len(opIdentFn.Outputs) {
 		isOpIdent = true
@@ -2157,7 +2245,7 @@ func UpdateSymbolsTable(prgrm *ast.CXProgram, symbolsData *SymbolsData, typeSigI
 		}
 
 		if !currFn.IsLocalVariable(typeSig.Name) {
-			GetGlobalSymbol(prgrm, symbolsData, typeSigPkg, typeSig.Name)
+			GetGlobalSymbol(prgrm, symbolsData, typeSigPkg, typeSig.Name, typeSig.ArgDetails)
 		}
 
 		assert.AssertInvariantTrue(len(symbolsData.symbolsIndex) > 0, "UpdateSymbolsTable: symbol scope stack is empty")
@@ -2187,6 +2275,7 @@ func UpdateSymbolsTable(prgrm *ast.CXProgram, symbolsData *SymbolsData, typeSigI
 			}
 
 			if !IsTempVar(prgrm, typeSig.Name) {
+				scopeShadowCheck(prgrm, symbolsData, typeSigPkg, typeSig)
 				// Change name to n:varname format
 				typeSig.Name = prgrm.CXProgramNameIntern(fmt.Sprintf("%v:%s", symbolsData.varCount, prgrm.CXProgramNameText(typeSig.Name)))
 				symbolsData.varCount++
@@ -2237,7 +2326,7 @@ func ProcessMethodCall(prgrm *ast.CXProgram, expr *ast.CXExpression, symbolsData
 	}
 
 	// The receiver may be a global, as box of box.Area().
-	GetGlobalSymbol(prgrm, symbolsData, receiverPkg, receiver.Name)
+	GetGlobalSymbol(prgrm, symbolsData, receiverPkg, receiver.Name, receiver.ArgDetails)
 	symbolTypeSig, err := lookupSymbol(prgrm, receiverPkg.Name, receiver.Name, symbolsData)
 	if err != nil {
 		prgrm.CXProgramCompileErrorAddDebug(ast.CompileErrorCodeIdentifierMissing, receiver.ArgDetails, ast.CompileErrorOperands{int64(receiver.Name)})
@@ -2290,7 +2379,7 @@ func ProcessMethodCall(prgrm *ast.CXProgram, expr *ast.CXExpression, symbolsData
 	expression = &prgrm.CXAtomicOps[expr.Index]
 	expression.Operator = fnIdx
 	receiver.Fields = receiver.Fields[:len(receiver.Fields)-1]
-	methodInputs := prgrm.GetFunctionFromArray(fnIdx).GetInputs(prgrm)
+	methodInputs := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx).GetInputs(prgrm)
 	methodPointer := len(methodInputs) > 0 && typeSignaturePointer(prgrm, prgrm.GetCXTypeSignatureFromArray(methodInputs[0]))
 	if !receiverPointer && methodPointer {
 		if !indirect && receiver.PassBy != constants.PASSBY_REFERENCE && len(receiver.Indexes) == 0 && IsTempVar(prgrm, receiver.Name) {
@@ -2355,7 +2444,7 @@ func typeSignaturePointer(prgrm *ast.CXProgram, typeSig *ast.CXTypeSignature) bo
 // types of the outputs of the method. It returns false after recording a
 // method without the outputs its call uses.
 func methodCallResultsType(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator, strct *ast.CXStruct, method *ast.CXArgument) bool {
-	methodOutputs := prgrm.GetFunctionFromArray(expression.Operator).GetOutputs(prgrm)
+	methodOutputs := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator).GetOutputs(prgrm)
 	for i, resultIdx := range expression.GetOutputs(prgrm) {
 		resultTypeSig := prgrm.GetCXTypeSignatureFromArray(resultIdx)
 		if resultTypeSig.Type != ast.TYPE_CXARGUMENT_DEPRECATE || !strings.HasPrefix(prgrm.CXProgramNameText(resultTypeSig.Name), constants.METHOD_RESULT_PREFIX) {
@@ -2416,7 +2505,7 @@ func GiveOffset(prgrm *ast.CXProgram, symbolsData *SymbolsData, typeSigIdx ast.C
 		}
 
 		if !currFn.IsLocalVariable(symTypeSigName) {
-			GetGlobalSymbol(prgrm, symbolsData, symPkg, symTypeSigName)
+			GetGlobalSymbol(prgrm, symbolsData, symPkg, symTypeSigName, symTypeSig.ArgDetails)
 		}
 
 		argTypeSignature, err := lookupSymbol(prgrm, symPkg.Name, symTypeSigName, symbolsData)
@@ -2438,13 +2527,11 @@ func ProcessTempVariable(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0928.
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	expressionOperatorInputs := expressionOperator.GetInputs(prgrm)
 	expressionOperatorOutputs := expressionOperator.GetOutputs(prgrm)
 
-	opIdentFn := ast.Natives[constants.OP_IDENTITY]
+	opIdentFn := ast.NativeFunctionOf(prgrm, constants.OP_IDENTITY)
 	isOpIdent := false
 	if expressionOperator != nil && expressionOperator.AtomicOPCode == opIdentFn.AtomicOPCode && len(expressionOperatorInputs) == len(opIdentFn.Inputs) && len(expressionOperatorOutputs) == len(opIdentFn.Outputs) {
 		isOpIdent = true
@@ -2454,7 +2541,9 @@ func ProcessTempVariable(prgrm *ast.CXProgram, expr *ast.CXExpression) {
 		// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 		// Now an arena getter, site S0929.
 		outputTypeSig := prgrm.GetCXTypeSignatureFromArray(expression.GetOutputs(prgrm)[0])
-		if IsTempVar(prgrm, outputTypeSig.Name) {
+		// An element of a literal of pointers or mixed dimensions, tmp[i], has
+		// its type from the literal.
+		if IsTempVar(prgrm, outputTypeSig.Name) && !argumentIndexedElement(prgrm, outputTypeSig) {
 			if outputTypeSig.Type == ast.TYPE_CXARGUMENT_DEPRECATE {
 				outputArgIdx := ast.CXArgumentIndex(outputTypeSig.Meta)
 
@@ -2871,6 +2960,7 @@ func CopyArgFields(prgrm *ast.CXProgram, symTypeSignature, argTypeSignature *ast
 		// FIXME Maybe we can unify this later.
 		if len(sym.Fields) > 0 {
 			indexedFieldBaseDeref(sym, arg)
+			fieldPointerDeref(sym, arg)
 			elt := sym.GetAssignmentElement(prgrm)
 
 			declSpec := []int{}
@@ -2976,12 +3066,8 @@ func CopyArgFields(prgrm *ast.CXProgram, symTypeSignature, argTypeSignature *ast
 		}
 	}
 
-	if dims := arg.ArraySliceDimensions(); dims > 0 {
-		arraySliceDerefs(sym, dims)
-	}
-
-	if dims := arg.SliceArrayDimensions(); dims > 0 && hasDerefOp(sym, constants.DEREF_ARRAY) {
-		sliceArrayDerefs(sym, dims)
+	if arg.ArraySliceMixed() && (hasDerefOp(sym, constants.DEREF_ARRAY) || hasDerefOp(sym, constants.DEREF_SLICE)) {
+		indexDerefsOfLengths(sym, arg.Lengths)
 	} else if arg.IsSlice() {
 		if !hasDerefOp(sym, constants.DEREF_ARRAY) {
 			// Then we're handling the slice itself, and we need to dereference it.
@@ -3110,9 +3196,7 @@ func ProcessSymbolFields(prgrm *ast.CXProgram, symTypeSignature, argTypeSignatur
 				receiverType := strct.Name
 
 				if methodIdx, methodErr := strctPkg.GetMethod(prgrm, receiverType, methodName); methodErr == nil {
-					// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-					// Now an arena getter, site S0970.
-					method := prgrm.GetFunctionFromArray(methodIdx)
+					method := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(methodIdx)
 					methodOutputs := method.GetOutputs(prgrm)
 					// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 					// Now an arena getter, site S0971.
@@ -3160,41 +3244,18 @@ func ProcessSymbolFields(prgrm *ast.CXProgram, symTypeSignature, argTypeSignatur
 					field := prgrm.GetCXArg(ast.CXArgumentIndex(fieldIdx))
 
 					if nameField.Name == field.Name {
-						nameField.Type = field.Type
-						nameField.Lengths = field.Lengths
-						nameField.Size = field.Size
-						nameField.PointerTargetType = field.PointerTargetType
-						nameField.StructType = field.StructType
-
-						if sym != nil {
-							sym.Lengths = field.Lengths
-						}
-
-						if len(nameField.DeclarationSpecifiers) > 0 {
-							nameField.DeclarationSpecifiers = append(field.DeclarationSpecifiers, nameField.DeclarationSpecifiers[1:]...)
-						} else {
-							nameField.DeclarationSpecifiers = field.DeclarationSpecifiers
-						}
-
-						if field.IsSlice() {
-							nameField.DereferenceOperations = append([]int{constants.DEREF_POINTER}, nameField.DereferenceOperations...)
-						}
-						if dims := field.ArraySliceDimensions(); dims > 0 {
-							arraySliceDerefs(nameField, dims)
-						}
-						if dims := field.SliceArrayDimensions(); dims > 0 && hasDerefOp(nameField, constants.DEREF_ARRAY) {
-							nameField.DereferenceOperations = nameField.DereferenceOperations[1:]
-							sliceArrayDerefs(nameField, dims)
-						}
-
-						nameField.PassBy = field.PassBy
-
+						symbolFieldTypeSet(nameField, field, sym)
 						if field.StructType != nil {
 							strct = field.StructType
 						}
-
 						break
 					}
+				} else if field, ok := typeSignatureArgument(prgrm, typeSignature); ok && nameField.Name == typeSignature.Name && symbolFieldCompound(typeSignature, &field) {
+					// A field of a pointer to an array or slice, or of an array of
+					// arrays, has no case of its own below.
+					field.PassBy = typeSignature.PassBy
+					symbolFieldTypeSet(nameField, &field, sym)
+					break
 				} else if nameField.Name == typeSignature.Name && typeSignature.Type == ast.TYPE_ATOMIC {
 					nameField.Type = types.Code(typeSignature.Meta)
 					nameField.StructType = nil
@@ -3316,10 +3377,11 @@ func ProcessSymbolFields(prgrm *ast.CXProgram, symTypeSignature, argTypeSignatur
 }
 
 // GetGlobalSymbol tries to retrieve `ident` from `symPkg`'s globals if `ident` is not found in the local scope.
-func GetGlobalSymbol(prgrm *ast.CXProgram, symbolsData *SymbolsData, symPkg *ast.CXPackage, ident stringpool.StringGid) {
+func GetGlobalSymbol(prgrm *ast.CXProgram, symbolsData *SymbolsData, symPkg *ast.CXPackage, ident stringpool.StringGid, details ast.CXArgumentDebugGid) {
 	_, err := lookupSymbol(prgrm, symPkg.Name, ident, symbolsData)
 	if err != nil {
 		if glbl, err := symPkg.GetGlobal(prgrm, ident); err == nil {
+			scopeGlobalsUse(prgrm, symPkg, ident, details)
 			lastIdx := len(*&symbolsData.symbolsIndex) - 1
 
 			// add name to symbols
@@ -3408,18 +3470,18 @@ func checkSliceBuiltinTypes(prgrm *ast.CXProgram, exprs []ast.CXExpression, curr
 	if err != nil {
 		panic(err)
 	}
-	expressionOperator := prgrm.GetFunctionFromArray(expression.Operator)
+	expressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	if expressionOperator == nil || !expressionOperator.IsBuiltIn() {
 		return
 	}
-	opName := ast.OpNames[expressionOperator.AtomicOPCode]
+	opcode := expressionOperator.AtomicOPCode
 	var elementInput int
-	switch opName {
-	case "append":
+	switch opcode {
+	case constants.OP_APPEND:
 		elementInput = 1
-	case "insert":
+	case constants.OP_INSERT:
 		elementInput = 2
-	case "resize", "remove", "copy":
+	case constants.OP_RESIZE, constants.OP_REMOVE, constants.OP_COPY:
 		elementInput = -1
 	default:
 		return
@@ -3433,7 +3495,7 @@ func checkSliceBuiltinTypes(prgrm *ast.CXProgram, exprs []ast.CXExpression, curr
 	if !strings.HasPrefix(sliceType, "[]") {
 		return
 	}
-	literal := opName == "append" && strings.HasPrefix(prgrm.CXProgramNameText(sliceTypeSig.Name), constants.SLICE_LITERAL_PREFIX)
+	literal := opcode == constants.OP_APPEND && strings.HasPrefix(prgrm.CXProgramNameText(sliceTypeSig.Name), constants.SLICE_LITERAL_PREFIX)
 	operandTypeCheck := func(typeSigIdx ast.CXTypeSignatureIndex, expectedType string) {
 		typeSig := prgrm.GetCXTypeSignatureFromArray(typeSigIdx)
 		if typeSignatureUndefined(prgrm, typeSig) {
@@ -3457,12 +3519,12 @@ func checkSliceBuiltinTypes(prgrm *ast.CXProgram, exprs []ast.CXExpression, curr
 		if sigFile, sigLine, sigColumn := ast.CXArgumentDebugPosition(prgrm, typeSig.ArgDetails); sigLine > 0 && !temporary {
 			file, line, column = sigFile, sigLine, sigColumn
 		}
-		prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeSliceElementType, file, line, column, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(opName), prgrm.CXProgramCompileErrorText(expectedType), prgrm.CXProgramCompileErrorText(receivedType)})
+		prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeSliceElementType, file, line, column, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(constants.OpcodeNameOf(opcode)), prgrm.CXProgramCompileErrorText(expectedType), prgrm.CXProgramCompileErrorText(receivedType)})
 	}
 	if elementInput > 0 && elementInput < len(inputs) {
 		operandTypeCheck(inputs[elementInput], sliceType[len("[]"):])
 	}
-	if opName == "copy" && len(inputs) > 1 {
+	if opcode == constants.OP_COPY && len(inputs) > 1 {
 		operandTypeCheck(inputs[1], sliceType)
 		return
 	}
@@ -3486,7 +3548,7 @@ func declarationSpecifiersSlice(dimensions int) []int {
 // incDecOperandMissing reports whether exprAtomicOp is an i++ or i-- that has
 // no 1 yet, which PostfixExpressionIncDec leaves out.
 func incDecOperandMissing(prgrm *ast.CXProgram, exprAtomicOp *ast.CXAtomicOperator) bool {
-	operator := prgrm.GetFunctionFromArray(exprAtomicOp.Operator)
+	operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(exprAtomicOp.Operator)
 	if operator == nil || (operator.AtomicOPCode != constants.OP_ADD && operator.AtomicOPCode != constants.OP_SUB) {
 		return false
 	}
@@ -3533,7 +3595,7 @@ func incDecOperandAdd(prgrm *ast.CXProgram, exprAtomicOp *ast.CXAtomicOperator) 
 // the line of the operator, not at the end of the function (skycoin/cx#450).
 func checkOperatorSameType(prgrm *ast.CXProgram, exprs []ast.CXExpression, currIndex int) {
 	expression := &prgrm.CXAtomicOps[exprs[currIndex].Index]
-	operator := prgrm.GetFunctionFromArray(expression.Operator)
+	operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
 	if operator == nil || !ast.IsOperator(operator.AtomicOPCode) || len(expression.GetOutputs(prgrm)) == 0 || expressionOperandInvalid(prgrm, expression) {
 		return
 	}
@@ -3731,32 +3793,17 @@ func pointerTypeOfLastField(prgrm *ast.CXProgram, arg *ast.CXArgument) bool {
 	return field.IsPointer() && arg.PointerTargetType != types.POINTER
 }
 
-// arraySliceDerefs makes the indexes of arg after the dims array dimensions
-// of an array of slices, as j in a[i][j] on a [N][]T, index a slice.
-func arraySliceDerefs(arg *ast.CXArgument, dims int) {
+// indexDerefsOfLengths makes each index of arg index a slice or an array as
+// its dimension in lengths, outermost first, is a slice or an array, as
+// a[i][j][k] on a [][2][]i32 indexes a slice, an array and a slice.
+func indexDerefsOfLengths(arg *ast.CXArgument, lengths []types.Pointer) {
 	index := 0
 	for i, op := range arg.DereferenceOperations {
 		if op != constants.DEREF_ARRAY && op != constants.DEREF_SLICE {
 			continue
 		}
 		arg.DereferenceOperations[i] = constants.DEREF_ARRAY
-		if index >= dims {
-			arg.DereferenceOperations[i] = constants.DEREF_SLICE
-		}
-		index++
-	}
-}
-
-// sliceArrayDerefs makes the first dims indexes of arg, those of the slice
-// dimensions of a slice of arrays, as i in a[i][j] on a [][N]T, index a slice.
-func sliceArrayDerefs(arg *ast.CXArgument, dims int) {
-	index := 0
-	for i, op := range arg.DereferenceOperations {
-		if op != constants.DEREF_ARRAY && op != constants.DEREF_SLICE {
-			continue
-		}
-		arg.DereferenceOperations[i] = constants.DEREF_ARRAY
-		if index < dims {
+		if index < len(lengths) && lengths[index] == 0 {
 			arg.DereferenceOperations[i] = constants.DEREF_SLICE
 		}
 		index++
@@ -3915,7 +3962,7 @@ func typeSignatureInvalid(prgrm *ast.CXProgram, typeSig *ast.CXTypeSignature) bo
 // expressionOperandInvalid reports whether an input or output of expression
 // is a types.INVALID placeholder, or its operator stands for a missing function.
 func expressionOperandInvalid(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator) bool {
-	if functionInvalid(prgrm, prgrm.GetFunctionFromArray(expression.Operator)) {
+	if functionInvalid(prgrm, prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)) {
 		return true
 	}
 	for _, typeSigIdx := range expression.GetInputs(prgrm) {
@@ -3934,14 +3981,14 @@ func expressionOperandInvalid(prgrm *ast.CXProgram, expression *ast.CXAtomicOper
 // invalidFunctionIndex adds a function that stands for the missing function
 // name, so that its call is typed. It takes any inputs and returns one
 // types.INVALID result, and the type checks skip its calls.
-func invalidFunctionIndex(prgrm *ast.CXProgram, pkgIdx ast.CXPackageIndex, name stringpool.StringGid) ast.CXFunctionIndex {
-	fn := ast.MakeFunction(prgrm, name, CurrentFile, LineNo)
+func invalidFunctionIndex(prgrm *ast.CXProgram, pkgIdx ast.CXPackageIndex, name stringpool.StringGid) ast.CXFunctionGid {
+	gid, fn := ast.MakeFunction(prgrm, name, CurrentFile, LineNo)
 	fn.Package = pkgIdx
 	_, input := ast.MakeArgument(prgrm, prgrm.CXProgramNameIntern("input"), CurrentFile, LineNo)
 	fn.AddInput(prgrm, input.SetType(types.UNDEFINED))
 	_, output := ast.MakeArgument(prgrm, prgrm.CXProgramNameIntern("output"), CurrentFile, LineNo)
 	fn.AddOutput(prgrm, output.SetType(types.INVALID))
-	return prgrm.AddFunctionInArray(fn)
+	return gid
 }
 
 // functionInvalid reports whether fn is a function of invalidFunctionIndex.
@@ -3994,9 +4041,25 @@ func dereferenceNonPointer(prgrm *ast.CXProgram, sym *ast.CXTypeSignature, decla
 	return false
 }
 
+// argumentIndexedElement reports whether sig names an element, tmp[i], of
+// a literal LiteralCompound builds, which has its type from the literal.
+func argumentIndexedElement(prgrm *ast.CXProgram, sig *ast.CXTypeSignature) bool {
+	if sig.Type != ast.TYPE_CXARGUMENT_DEPRECATE {
+		return false
+	}
+	arg := prgrm.GetCXArgFromArray(ast.CXArgumentIndex(sig.Meta))
+	return len(arg.Indexes) > 0 && literalTypeCompound(arg)
+}
+
 // copyArgFieldsDeclarationSite reports whether sym sits where arg is declared,
 // which a use on the line of the declaration, as in func f() (r [2]i32) { r[1] = 2 }, does not.
 func copyArgFieldsDeclarationSite(prgrm *ast.CXProgram, sym *ast.CXArgument, arg *ast.CXArgument) bool {
+	for _, spec := range sym.DeclarationSpecifiers {
+		if spec == constants.DECL_INDEXING {
+			// An element, as tmp[i] of a literal on the line of tmp is.
+			return false
+		}
+	}
 	_, symLine := ast.CXArgumentDebugFileLine(prgrm, sym.ArgDetails)
 	_, argLine := ast.CXArgumentDebugFileLine(prgrm, arg.ArgDetails)
 	if symLine != argLine {
@@ -4021,4 +4084,216 @@ func symbolFieldsAfterNonStruct(prgrm *ast.CXProgram, field *ast.CXArgument, inF
 	for _, fieldIdx := range after {
 		prgrm.GetCXArgFromArray(fieldIdx).Type = types.INVALID
 	}
+}
+
+// shortDeclarationPointerType returns the type of the value sig names when
+// it is a variable of a pointer type, as p of a *str, **i32, *[]T or *T is,
+// or &v of such a variable.
+func shortDeclarationPointerType(prgrm *ast.CXProgram, sig *ast.CXTypeSignature) (shortDeclarationType, bool) {
+	var value ast.CXArgument
+	switch sig.Type {
+	case ast.TYPE_POINTER_ATOMIC, ast.TYPE_POINTER_STRUCT, ast.TYPE_POINTER_ARRAY_ATOMIC, ast.TYPE_POINTER_SLICE_ATOMIC:
+		var ok bool
+		if value, ok = typeSignatureArgument(prgrm, sig); !ok {
+			return shortDeclarationType{}, false
+		}
+	case ast.TYPE_CXARGUMENT_DEPRECATE:
+		arg := prgrm.GetCXArg(ast.CXArgumentIndex(sig.Meta))
+		specs := arg.DeclarationSpecifiers
+		if len(arg.Indexes) > 0 || len(arg.Fields) > 0 || len(arg.DereferenceOperations) > 0 || len(specs) < 2 || specs[len(specs)-1] != constants.DECL_POINTER {
+			return shortDeclarationType{}, false
+		}
+		argumentTypeCopy(&value, arg)
+		// &v of an argument has the pointer in its specifiers already.
+		return shortDeclarationTypeOf(&value), true
+	default:
+		return shortDeclarationType{}, false
+	}
+	if ast.CXTypeSignaturePassBy(prgrm, sig) == constants.PASSBY_REFERENCE {
+		DeclarationSpecifiers(&value, nil, constants.DECL_POINTER)
+	}
+	return shortDeclarationTypeOf(&value), true
+}
+
+// shortDeclarationTypeOf returns the type of arg.
+func shortDeclarationTypeOf(arg *ast.CXArgument) shortDeclarationType {
+	return shortDeclarationType{
+		typ:               arg.Type,
+		pointerTargetType: arg.PointerTargetType,
+		size:              arg.Size,
+		specs:             arg.DeclarationSpecifiers,
+		lengths:           arg.Lengths,
+		structType:        arg.StructType,
+	}
+}
+
+// typeSignatureArgument returns the argument a declaration of the type of
+// sig makes, for a signature that is not an argument and reads no index,
+// field or dereference.
+func typeSignatureArgument(prgrm *ast.CXProgram, sig *ast.CXTypeSignature) (ast.CXArgument, bool) {
+	var arg ast.CXArgument
+	if sig.IsDeref {
+		return arg, false
+	}
+	switch sig.Type {
+	case ast.TYPE_ATOMIC, ast.TYPE_POINTER_ATOMIC:
+		arg.Type, arg.Size = types.Code(sig.Meta), types.Code(sig.Meta).Size()
+		arg.DeclarationSpecifiers = []int{constants.DECL_BASIC}
+	case ast.TYPE_STRUCT, ast.TYPE_POINTER_STRUCT:
+		details := prgrm.GetCXTypeSignatureStructFromArray(sig.Meta)
+		if len(details.Fields) > 0 || details.StructType == nil {
+			return arg, false
+		}
+		arg.Type, arg.StructType, arg.Size = types.STRUCT, details.StructType, details.StructType.GetStructSize(prgrm)
+		arg.DeclarationSpecifiers = []int{constants.DECL_STRUCT}
+	case ast.TYPE_ARRAY_ATOMIC, ast.TYPE_POINTER_ARRAY_ATOMIC, ast.TYPE_SLICE_ATOMIC, ast.TYPE_POINTER_SLICE_ATOMIC:
+		details := prgrm.GetCXTypeSignatureArrayFromArray(sig.Meta)
+		if len(details.Indexes) > 0 {
+			return arg, false
+		}
+		arg.Type, arg.Size = types.Code(details.Meta), types.Code(details.Meta).Size()
+		arg.DeclarationSpecifiers = []int{constants.DECL_BASIC}
+		slice := sig.Type == ast.TYPE_SLICE_ATOMIC || sig.Type == ast.TYPE_POINTER_SLICE_ATOMIC
+		for range details.Lengths {
+			if slice {
+				DeclarationSpecifiers(&arg, nil, constants.DECL_SLICE)
+			} else {
+				arg.DeclarationSpecifiers = append(arg.DeclarationSpecifiers, constants.DECL_ARRAY)
+			}
+		}
+		if !slice {
+			arg.Lengths = append([]types.Pointer(nil), details.Lengths...)
+		}
+	default:
+		return arg, false
+	}
+	switch sig.Type {
+	case ast.TYPE_POINTER_ATOMIC, ast.TYPE_POINTER_STRUCT, ast.TYPE_POINTER_ARRAY_ATOMIC, ast.TYPE_POINTER_SLICE_ATOMIC:
+		DeclarationSpecifiers(&arg, nil, constants.DECL_POINTER)
+	}
+	return arg, true
+}
+
+// symbolFieldTypeSet gives nameField, a field sym reads, the type of the
+// struct field it names.
+func symbolFieldTypeSet(nameField *ast.CXArgument, field *ast.CXArgument, sym *ast.CXArgument) {
+	nameField.Type = field.Type
+	nameField.Lengths = field.Lengths
+	nameField.Size = field.Size
+	nameField.PointerTargetType = field.PointerTargetType
+	nameField.StructType = field.StructType
+
+	if sym != nil {
+		sym.Lengths = field.Lengths
+	}
+
+	if len(nameField.DeclarationSpecifiers) > 0 {
+		nameField.DeclarationSpecifiers = append(append([]int(nil), field.DeclarationSpecifiers...), nameField.DeclarationSpecifiers[1:]...)
+	} else {
+		nameField.DeclarationSpecifiers = field.DeclarationSpecifiers
+	}
+
+	if field.IsSlice() {
+		nameField.DereferenceOperations = append([]int{constants.DEREF_POINTER}, nameField.DereferenceOperations...)
+	}
+	if field.ArraySliceDimensions() > 0 {
+		indexDerefsOfLengths(nameField, field.Lengths)
+	}
+	if field.SliceArrayDimensions() > 0 && hasDerefOp(nameField, constants.DEREF_ARRAY) {
+		nameField.DereferenceOperations = nameField.DereferenceOperations[1:]
+		indexDerefsOfLengths(nameField, field.Lengths)
+	}
+
+	nameField.PassBy = field.PassBy
+}
+
+// symbolFieldCompound reports whether the field of signature sig, made into
+// field, is a pointer to an array or slice, or an array of arrays.
+func symbolFieldCompound(sig *ast.CXTypeSignature, field *ast.CXArgument) bool {
+	switch sig.Type {
+	case ast.TYPE_POINTER_ARRAY_ATOMIC, ast.TYPE_POINTER_SLICE_ATOMIC:
+		return true
+	case ast.TYPE_ARRAY_ATOMIC:
+		return len(field.Lengths) > 1
+	}
+	return false
+}
+
+// outputlessCallInvalidate reports expression, a call of operator, a
+// function with no results, used as a value at file and line. The call
+// becomes a stand in typed types.INVALID, so its uses report nothing more.
+func outputlessCallInvalidate(prgrm *ast.CXProgram, expression *ast.CXAtomicOperator, operator *ast.CXFunction, file ast.SourceFileGid, line int) *ast.CXFunction {
+	prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeFunctionResultMissing, file, line, ast.CompileErrorOperands{int64(operator.Name)})
+	expression.Operator = invalidFunctionIndex(prgrm, expression.Package, operator.Name)
+	return prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
+}
+
+// outputlessValueCheck reports the value exprs when it ends in a call of a
+// function with no results, and makes the call a stand in typed
+// types.INVALID, see outputlessCallInvalidate.
+func outputlessValueCheck(prgrm *ast.CXProgram, exprs []ast.CXExpression) {
+	valueCheck(prgrm, exprs, false)
+}
+
+// SingleValueCheck reports the value exprs when it ends in a call of a
+// function with no results or with more than one, as Go does, and makes the
+// call a stand in typed types.INVALID.
+func SingleValueCheck(prgrm *ast.CXProgram, exprs []ast.CXExpression) {
+	valueCheck(prgrm, exprs, true)
+}
+
+// valueCheck is outputlessValueCheck, and SingleValueCheck when single is
+// true.
+func valueCheck(prgrm *ast.CXProgram, exprs []ast.CXExpression, single bool) {
+	for i := len(exprs) - 1; i >= 0; i-- {
+		if exprs[i].Type == ast.CX_LINE {
+			continue
+		}
+		expression := &prgrm.CXAtomicOps[exprs[i].Index]
+		operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(expression.Operator)
+		if operator == nil || exprs[i].IsMethodCall() || len(expression.GetOutputs(prgrm)) > 0 {
+			return
+		}
+		results := operator.GetOutputs(prgrm)
+		if len(results) == 1 || len(results) > 1 && !single {
+			return
+		}
+		file, line := CurrentFile, LineNo
+		if cxLine, err := prgrm.GetPreviousCXLine(exprs, i); err == nil && cxLine.LineNumber > 0 {
+			file, line = cxLine.FileName, cxLine.LineNumber
+		}
+		if len(results) == 0 {
+			outputlessCallInvalidate(prgrm, expression, operator, file, line)
+			return
+		}
+		list := make([]string, len(results))
+		for r, result := range results {
+			sig := prgrm.GetCXTypeSignatureFromArray(result)
+			list[r] = ast.GetFormattedType(prgrm, sig)
+			if name := prgrm.CXProgramNameText(StripNameNumber(prgrm, sig.Name)); name != "" {
+				list[r] = name + " " + list[r]
+			}
+		}
+		prgrm.CXProgramCompileErrorAddLine(ast.CompileErrorCodeMultipleValueSingle, file, line, ast.CompileErrorOperands{int64(operator.Name), prgrm.CXProgramCompileErrorText(strings.Join(list, ", "))})
+		expression.Operator = invalidFunctionIndex(prgrm, expression.Package, operator.Name)
+		return
+	}
+}
+
+// valueFormattedType is the type of the value sig gives, which is &p, a
+// pointer to the pointer p, when sig is a pointer variable read by reference.
+func valueFormattedType(prgrm *ast.CXProgram, sig *ast.CXTypeSignature) string {
+	typ := ast.GetFormattedType(prgrm, sig)
+	if sig.PassBy != constants.PASSBY_REFERENCE || sig.IsDeref {
+		return typ
+	}
+	switch sig.Type {
+	case ast.TYPE_POINTER_ATOMIC, ast.TYPE_POINTER_ARRAY_ATOMIC, ast.TYPE_POINTER_SLICE_ATOMIC:
+		return "*" + typ
+	case ast.TYPE_POINTER_STRUCT:
+		if len(prgrm.GetCXTypeSignatureStructFromArray(sig.Meta).Fields) == 0 {
+			return "*" + typ
+		}
+	}
+	return typ
 }

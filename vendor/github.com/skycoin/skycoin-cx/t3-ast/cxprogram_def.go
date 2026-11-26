@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/skycoin/skycoin-cx/t0-types"
+	"github.com/skycoin/skycoin-cx/t1-constants"
 	stringpool "github.com/skycoin/skycoin-cx/t2-cx-core-stringpool"
 )
 
@@ -36,6 +37,16 @@ type CXProgram struct {
 	Terminated  bool          // Utility field for the runtime. Indicates if a CX program has already finished or not.
 	Version     int64         // Language version, constants.LanguageVersionCurrent when built.
 
+	// ProgramLibrariesUsed marks, by library number, the system libraries the
+	// program calls. ProgramLibrariesEnabled marks the ones this run may call,
+	// set from --enable, see constants.LibraryPolicyEnabledWhenImported.
+	ProgramLibrariesUsed    [constants.LibraryCount]bool
+	ProgramLibrariesEnabled [constants.LibraryCount]bool
+	// ProgramOperationsEnabled holds the library opcodes this run may call,
+	// those --enable names one by one and, once loaded, every opcode of an
+	// enabled library (decision D119).
+	ProgramOperationsEnabled constants.OpcodeSet
+
 	// RuntimeError is the runtime error that ended the old loop, printed by
 	// the printer package once the loop has returned.
 	RuntimeError RuntimeErrorRecord
@@ -48,6 +59,21 @@ type CXProgram struct {
 	// in, opened once at run start, see #433. Nil means file opcodes fail.
 	ProgramSandboxRoot *os.Root
 
+	// ProgramInputValues and ProgramOutputValues hold the operands of the
+	// native opcode the old loop runs, sized by RunBuffersPrepare (#407).
+	ProgramInputValues  []CXValue
+	ProgramOutputValues []CXValue
+
+	// ProgramFormatBuffer is the scratch the print, printf and str conversion
+	// opcodes format into, kept between them so they do not allocate (#412).
+	ProgramFormatBuffer []byte
+
+	// ProgramCallbackValues hold the operands of the nested loops Callback
+	// runs, one set per depth of nesting, and ProgramCallbackDepth counts the
+	// loops running. RunBuffersPrepare sizes the first set (#407).
+	ProgramCallbackValues []CXCallbackValues
+	ProgramCallbackDepth  int
+
 	// ProgramStdin is the one reader read() takes lines from for the whole run,
 	// set by ProgramStdinInit, see skycoin/cx#110. Nil reads as end of input.
 	ProgramStdin *bufio.Reader
@@ -59,7 +85,6 @@ type CXProgram struct {
 	// For new CX AST arrays
 	CXAtomicOps []CXAtomicOperator
 	CXPackages  []CXPackage
-	CXFunctions []CXFunction
 	CXStructs   []CXStruct
 	// Then reference the package of function by CxFunction id
 
@@ -71,4 +96,12 @@ type CXProgram struct {
 	// OBJMODEL: []CXExpressionGid or CXExpressionGid, phase 5 #347.
 	// Now objects held by value, site S0187.
 	SysInitExprs []CXExpression
+
+	// ImportPositions is where each package imports another, for the shadowing
+	// errors of #486. Compiler only, never serialized.
+	ImportPositions map[CXProgramImportKey]CXProgramImportPosition
+
+	// ImportScoped holds the imports into scope, import . "pkg" and the
+	// others of #487. Compiler only, never serialized.
+	ImportScoped []CXProgramImportScoped
 }

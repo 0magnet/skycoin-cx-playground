@@ -1,4 +1,4 @@
-//go:build cxfx && !mobile
+//go:build cxfx
 
 package cxfx
 
@@ -26,77 +26,81 @@ func toSources(in interface{}) []al.Source { // REFACTOR : ??
 	return out
 }
 
-func opAlCloseDevice(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlCloseDevice(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	al.CloseDevice()
 }
 
-func opAlDeleteBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlDeleteBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	buffers := toBuffers(inputs[0].GetSlice_i32(prgrm))
 	al.DeleteBuffers(buffers...)
 }
 
-func opAlDeleteSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlDeleteSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	sources := toSources(inputs[0].GetSlice_i32(prgrm))
 	al.DeleteSources(sources...)
 }
 
-func opAlDeviceError(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlDeviceError(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	err := al.DeviceError()
 	outputs[0].Set_i32(prgrm, err)
 }
 
-func opAlError(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlError(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	err := al.Error()
 	outputs[0].Set_i32(prgrm, err)
 }
 
-func opAlExtensions(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+// VIOLATION STRHOT-192: B, OpenAL returns text, #432.
+func OpAlExtensions(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	extensions := al.Extensions()
 	outputs[0].Set_str(prgrm, extensions)
 }
 
-func opAlOpenDevice(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlOpenDevice(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	if err := al.OpenDevice(); err != nil {
 		panic(err)
 	}
 }
 
-func opAlPauseSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlPauseSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	sources := toSources(inputs[0].GetSlice_i32(prgrm))
 	al.PauseSources(sources...)
 }
 
-func opAlPlaySources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlPlaySources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	sources := toSources(inputs[0].GetSlice_i32(prgrm))
 	al.PlaySources(sources...)
 }
 
-func opAlRenderer(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+// VIOLATION STRHOT-193: B, OpenAL returns text, #432.
+func OpAlRenderer(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	renderer := al.Renderer()
 	outputs[0].Set_str(prgrm, renderer)
 }
 
-func opAlRewindSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlRewindSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	sources := toSources(inputs[0].GetSlice_i32(prgrm))
 	al.RewindSources(sources...)
 }
 
-func opAlStopSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlStopSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	sources := toSources(inputs[0].GetSlice_i32(prgrm))
 	al.StopSources(sources...)
 }
 
-func opAlVendor(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+// VIOLATION STRHOT-194: B, OpenAL returns text, #432.
+func OpAlVendor(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	vendor := al.Vendor()
 	outputs[0].Set_str(prgrm, vendor)
 }
 
-func opAlVersion(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+// VIOLATION STRHOT-195: B, OpenAL returns text, #432.
+func OpAlVersion(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	version := al.Version()
 	outputs[0].Set_str(prgrm, version)
 }
 
-func opAlGenBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlGenBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	buffers := al.GenBuffers(int(inputs[0].Get_i32(prgrm)))
 	outputSlicePointer := outputs[0].Offset
 	outputSliceOffset := types.Read_ptr(prgrm.Memory, outputSlicePointer)
@@ -108,7 +112,7 @@ func opAlGenBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CX
 	outputs[0].Set_ptr(prgrm, outputSliceOffset)
 }
 
-func opAlBufferData(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlBufferData(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	buffer := al.Buffer(inputs[0].Get_i32(prgrm))
 	format := inputs[1].Get_i32(prgrm)
 	data := toBytes(inputs[2].GetSlice_ui8(prgrm))
@@ -116,7 +120,7 @@ func opAlBufferData(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CX
 	buffer.BufferData(uint32(format), data, frequency)
 }
 
-func opAlGenSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlGenSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	sources := al.GenSources(int(inputs[0].Get_i32(prgrm)))
 	outputSlicePointer := outputs[0].Offset
 	outputSliceOffset := types.Read_ptr(prgrm.Memory, outputSlicePointer)
@@ -128,28 +132,28 @@ func opAlGenSources(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CX
 	outputs[0].Set_ptr(prgrm, outputSliceOffset)
 }
 
-func opAlSourceBuffersProcessed(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlSourceBuffersProcessed(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	source := al.Source(inputs[0].Get_i32(prgrm))
 	outputs[0].Set_i32(prgrm, source.BuffersProcessed())
 }
 
-func opAlSourceBuffersQueued(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlSourceBuffersQueued(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	source := al.Source(inputs[0].Get_i32(prgrm))
 	outputs[0].Set_i32(prgrm, source.BuffersQueued())
 }
 
-func opAlSourceQueueBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlSourceQueueBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	source := al.Source(inputs[0].Get_i32(prgrm))
 	buffers := toBuffers(inputs[1].GetSlice_i32(prgrm))
 	source.QueueBuffers(buffers...)
 }
 
-func opAlSourceState(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlSourceState(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	source := al.Source(inputs[0].Get_i32(prgrm))
 	outputs[0].Set_i32(prgrm, source.State())
 }
 
-func opAlSourceUnqueueBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAlSourceUnqueueBuffers(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	source := al.Source(inputs[0].Get_i32(prgrm))
 	buffers := toBuffers(inputs[1].GetSlice_i32(prgrm))
 	source.UnqueueBuffers(buffers...)

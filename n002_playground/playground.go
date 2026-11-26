@@ -21,9 +21,7 @@ import (
 	parsingcompletor "github.com/skycoin/skycoin-cx/t8-cxparsingcompletor"
 	cxparsing "github.com/skycoin/skycoin-cx/t9-cxparsing"
 
-	"github.com/skycoin/skycoin-cx/t0-types"
 	globals "github.com/skycoin/skycoin-cx/t2-globals"
-	cxast "github.com/skycoin/skycoin-cx/t3-ast"
 )
 
 var (
@@ -37,7 +35,6 @@ type ExampleContent struct {
 }
 
 var InitPlayground = func(workingDir string) error {
-	types.Allocator = cxast.AllocateSeq
 
 	examplesDir = filepath.Join(workingDir, "./examples")
 	exampleCollection = make(map[string]string)
@@ -184,7 +181,6 @@ func RunChild(args []string) (code int, ok bool) {
 	if len(args) < 2 || (args[1] != ChildEvalArg && args[1] != ChildASTArg) {
 		return 0, false
 	}
-	types.Allocator = cxast.AllocateSeq
 	src, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Println(err)

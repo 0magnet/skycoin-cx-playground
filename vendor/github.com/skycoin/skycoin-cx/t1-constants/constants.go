@@ -7,7 +7,6 @@ import (
 // var COREPATH = ""
 
 const STACK_OVERFLOW_ERROR = "stack overflow"
-const HEAP_EXHAUSTED_ERROR = "heap exhausted"
 const MAIN_FUNC = "main"
 const SYS_INIT_FUNC = "*init"
 const MAIN_PKG = "main"
@@ -18,7 +17,7 @@ const OS_ARGS = "Args"
 // LanguageVersionCurrent is the language version this CX implements, a
 // yymmddnnnn integer stored in serialized programs as CXProgram.Version.
 // See the Language versions section of LanguageGuide.md.
-const LanguageVersionCurrent int64 = 2611200002
+const LanguageVersionCurrent int64 = 2611250005
 
 const NON_ASSIGN_PREFIX = "nonAssign"
 const LOCAL_PREFIX = "*tmp"
@@ -125,6 +124,7 @@ var ErrorStrings map[int]string = map[int]string{
 	types.CX_RUNTIME_SLICE_INDEX_OUT_OF_RANGE: "CX_RUNTIME_SLICE_INDEX_OUT_OF_RANGE",
 	types.CX_RUNTIME_NOT_IMPLEMENTED:          "CX_RUNTIME_NOT_IMPLEMENTED",
 	types.CX_RUNTIME_INVALID_CAST:             "CX_RUNTIME_INVALID_CAST",
+	types.CX_RUNTIME_LIBRARY_DISABLED:         "CX_RUNTIME_LIBRARY_DISABLED",
 }
 
 const (

@@ -85,6 +85,8 @@ func GetSliceData(prgrm *CXProgram, offset types.Pointer, sizeofElement types.Po
 }
 
 // SliceResizeEx does the logic required by `SliceResize`. It is separated because some other functions might have access to the offsets of the slices, but not the `CXArgument`s.
+// GCREACH: allocates a larger slice object, which adds to the GC pressure,
+// see docs/GarbageCollector.md.
 func SliceResizeEx(prgrm *CXProgram, outputSliceOffset types.Pointer, count types.Pointer, sizeofElement types.Pointer) types.Pointer {
 	var outputSliceHeader []byte
 	var outputSliceCap types.Pointer
@@ -97,7 +99,7 @@ func SliceResizeEx(prgrm *CXProgram, outputSliceOffset types.Pointer, count type
 	var newLen = count
 	var newCap = outputSliceCap
 	if newLen > newCap {
-		newCap = sliceCapacityGrow(newCap, newLen, sizeofElement)
+		newCap = sliceCapacityGrow(prgrm, newCap, newLen, sizeofElement)
 		var outputObjectSize = types.OBJECT_HEADER_SIZE + constants.SLICE_HEADER_SIZE + newCap*sizeofElement
 		outputSliceOffset = AllocateSeq(prgrm, outputObjectSize)
 		types.Write_ptr(types.Get_obj_header(prgrm.Memory, outputSliceOffset), types.OBJECT_GC_HEADER_SIZE, outputObjectSize)
@@ -113,11 +115,11 @@ func SliceResizeEx(prgrm *CXProgram, outputSliceOffset types.Pointer, count type
 }
 
 // SliceElementLimit is the most elements of sizeofElement bytes that one
-// slice object can hold within the heap.
-func SliceElementLimit(sizeofElement types.Pointer) types.Pointer {
+// slice object can hold within the heap cap of prgrm.
+func SliceElementLimit(prgrm *CXProgram, sizeofElement types.Pointer) types.Pointer {
 	var limit types.Pointer
-	if constants.MAX_HEAP_SIZE > types.OBJECT_HEADER_SIZE+constants.SLICE_HEADER_SIZE {
-		limit = constants.MAX_HEAP_SIZE - types.OBJECT_HEADER_SIZE - constants.SLICE_HEADER_SIZE
+	if heapCap := HeapCap(prgrm); heapCap > types.OBJECT_HEADER_SIZE+constants.SLICE_HEADER_SIZE {
+		limit = heapCap - types.OBJECT_HEADER_SIZE - constants.SLICE_HEADER_SIZE
 	}
 	if sizeofElement > 1 {
 		limit /= sizeofElement
@@ -127,10 +129,10 @@ func SliceElementLimit(sizeofElement types.Pointer) types.Pointer {
 
 // sliceCapacityGrow doubles capacity up to at least newLen elements. A slice too
 // large for the heap is a heap exhausted error, before its size can wrap.
-func sliceCapacityGrow(capacity types.Pointer, newLen types.Pointer, sizeofElement types.Pointer) types.Pointer {
-	limit := SliceElementLimit(sizeofElement)
+func sliceCapacityGrow(prgrm *CXProgram, capacity types.Pointer, newLen types.Pointer, sizeofElement types.Pointer) types.Pointer {
+	limit := SliceElementLimit(prgrm, sizeofElement)
 	if newLen > limit {
-		panic(constants.HEAP_EXHAUSTED_ERROR)
+		HeapOutOfMemory(prgrm, uint64(types.OBJECT_HEADER_SIZE+constants.SLICE_HEADER_SIZE)+uint64(newLen)*uint64(sizeofElement))
 	}
 	grown := limit
 	if capacity <= limit/2 {
@@ -143,6 +145,8 @@ func sliceCapacityGrow(capacity types.Pointer, newLen types.Pointer, sizeofEleme
 }
 
 // SliceResize ...
+// GCREACH: allocates a larger slice object, which adds to the GC pressure,
+// see docs/GarbageCollector.md.
 func SliceResize(prgrm *CXProgram, fp types.Pointer, out *CXTypeSignature, inp *CXTypeSignature, count types.Pointer, sizeofElement types.Pointer) types.Pointer {
 	inputSliceOffset := GetSliceOffset(prgrm, fp, inp)
 	outputSliceOffset := SliceResizeEx(prgrm, inputSliceOffset, count, sizeofElement)
@@ -227,10 +231,10 @@ func SliceInsert(prgrm *CXProgram, fp types.Pointer, out *CXTypeSignature, inp *
 	return outputSliceOffset
 }
 
-// SliceRemove ...
-func SliceRemove(prgrm *CXProgram, fp types.Pointer, out *CXTypeSignature, inp *CXTypeSignature, index types.Pointer, sizeofElement types.Pointer) types.Pointer {
+// SliceRemove removes the element at index in place and returns the input
+// slice object, which the result shares with the input as append does.
+func SliceRemove(prgrm *CXProgram, fp types.Pointer, inp *CXTypeSignature, index types.Pointer, sizeofElement types.Pointer) types.Pointer {
 	inputSliceOffset := GetSliceOffset(prgrm, fp, inp)
-	outputSliceOffset := GetSliceOffset(prgrm, fp, out)
 
 	var inputSliceLen types.Pointer
 	if inputSliceOffset != 0 && inputSliceOffset.IsValid() {
@@ -241,16 +245,17 @@ func SliceRemove(prgrm *CXProgram, fp types.Pointer, out *CXTypeSignature, inp *
 		panic(types.CX_RUNTIME_SLICE_INDEX_OUT_OF_RANGE)
 	}
 
-	outputSliceData := GetSliceData(prgrm, outputSliceOffset, sizeofElement)
-	copy(outputSliceData[index*sizeofElement:], outputSliceData[(index+1)*sizeofElement:])
-	outputSliceHeader := GetSliceHeader(prgrm, outputSliceOffset)
-	types.Write_ptr(outputSliceHeader, types.POINTER_SIZE, inputSliceLen-1)
-	return outputSliceOffset
+	sliceData := GetSliceData(prgrm, inputSliceOffset, sizeofElement)
+	copy(sliceData[index*sizeofElement:], sliceData[(index+1)*sizeofElement:])
+	types.Write_ptr(GetSliceHeader(prgrm, inputSliceOffset), types.POINTER_SIZE, inputSliceLen-1)
+	return inputSliceOffset
 }
 
 // WriteToSlice is used to create slices in the backend, i.e. not by calling `append`
 // in a CX program, but rather by the CX code itself. This function is used by
-// affordances, serialization and to store OS input arguments.
+// serialization and to store OS input arguments.
+// GCREACH: allocates a larger slice object, which adds to the GC pressure,
+// see docs/GarbageCollector.md.
 func WriteToSlice(prgrm *CXProgram, off types.Pointer, inp []byte) types.Pointer {
 	// TODO: Check all these parses from/to int32/int.
 	var inputSliceLen types.Pointer

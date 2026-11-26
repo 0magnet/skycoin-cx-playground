@@ -24,6 +24,8 @@ func (programPath ProgramFileSystemPath) ProgramFileSystemPathText() string {
 
 // ProgramFileSystemPathFromBytes validates a path read from program memory.
 // It must be relative, use only '/' and not start with ".." once cleaned.
+// VIOLATION STRHOT-269: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
 func ProgramFileSystemPathFromBytes(pathBytes []byte) (ProgramFileSystemPath, *FileError) {
 	invalid := func(code FileErrorCode, reason string) (ProgramFileSystemPath, *FileError) {
 		fileError := &FileError{
@@ -78,6 +80,7 @@ func ProgramSandboxRootOpen(dir string) (*os.Root, *FileError) {
 	return root, nil
 }
 
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
 func programSandboxRootCheck(root *os.Root, operation FileOperationCode, programPath ProgramFileSystemPath) *FileError {
 	if root != nil {
 		return nil
@@ -91,6 +94,8 @@ func programSandboxRootCheck(root *os.Root, operation FileOperationCode, program
 }
 
 // ProgramSandboxFileOpen opens a program path for reading inside root.
+// VIOLATION STRHOT-272: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
 func ProgramSandboxFileOpen(root *os.Root, programPath ProgramFileSystemPath) (*os.File, *FileError) {
 	if fileError := programSandboxRootCheck(root, FileOperationOpen, programPath); fileError != nil {
 		return nil, fileError
@@ -106,6 +111,8 @@ func ProgramSandboxFileOpen(root *os.Root, programPath ProgramFileSystemPath) (*
 }
 
 // ProgramSandboxFileCreate creates or truncates a program path inside root.
+// VIOLATION STRHOT-270: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
 func ProgramSandboxFileCreate(root *os.Root, programPath ProgramFileSystemPath) (*os.File, *FileError) {
 	if fileError := programSandboxRootCheck(root, FileOperationCreate, programPath); fileError != nil {
 		return nil, fileError
@@ -118,6 +125,42 @@ func ProgramSandboxFileCreate(root *os.Root, programPath ProgramFileSystemPath) 
 		return nil, programSandboxFileError(FileOperationCreate, programPath, err)
 	}
 	return file, nil
+}
+
+// ProgramSandboxFileOpenReadWrite opens a program path inside root for
+// reading and writing at any offset, creating it when it does not exist and
+// keeping its content when it does.
+// VIOLATION STRHOT-349: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
+func ProgramSandboxFileOpenReadWrite(root *os.Root, programPath ProgramFileSystemPath) (*os.File, *FileError) {
+	if fileError := programSandboxRootCheck(root, FileOperationOpenReadWrite, programPath); fileError != nil {
+		return nil, fileError
+	}
+	if logFile {
+		fmt.Printf("ProgramSandboxFileOpenReadWrite: Opening '%s' in '%s'\n", programPath.programFileSystemPathText, root.Name())
+	}
+	file, err := root.OpenFile(programPath.programFileSystemPathText, os.O_RDWR|os.O_CREATE, 0o666)
+	if err != nil {
+		return nil, programSandboxFileError(FileOperationOpenReadWrite, programPath, err)
+	}
+	return file, nil
+}
+
+// ProgramSandboxFileRemove removes a program path inside root, a file or an
+// empty directory. A symlink is removed itself, never what it points to.
+// VIOLATION STRHOT-350: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
+func ProgramSandboxFileRemove(root *os.Root, programPath ProgramFileSystemPath) *FileError {
+	if fileError := programSandboxRootCheck(root, FileOperationRemove, programPath); fileError != nil {
+		return fileError
+	}
+	if logFile {
+		fmt.Printf("ProgramSandboxFileRemove: Removing '%s' in '%s'\n", programPath.programFileSystemPathText, root.Name())
+	}
+	if err := root.Remove(programPath.programFileSystemPathText); err != nil {
+		return programSandboxFileError(FileOperationRemove, programPath, err)
+	}
+	return nil
 }
 
 // ProgramSandboxFileRead reads a whole program path inside root.
@@ -135,6 +178,8 @@ func ProgramSandboxFileRead(root *os.Root, programPath ProgramFileSystemPath) ([
 	return content, nil
 }
 
+// VIOLATION STRHOT-271: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
 func programSandboxFileError(operation FileOperationCode, programPath ProgramFileSystemPath, err error) *FileError {
 	fileError := fileErrorFromFileSystemError(operation, programPath.programFileSystemPathText, err)
 	if logFile {

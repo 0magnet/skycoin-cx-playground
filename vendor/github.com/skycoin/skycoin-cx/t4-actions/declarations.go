@@ -64,11 +64,6 @@ func DeclarationSpecifiers(declSpec *ast.CXArgument, arrayLengths []types.Pointe
 func DeclarationSpecifiersBasic(prgrm *ast.CXProgram, typeCode types.Code) *ast.CXArgument {
 	_, arg := ast.MakeArgument(prgrm, stringpool.StringGidNil, CurrentFile, LineNo)
 	arg.SetType(typeCode)
-	if typeCode == types.AFF {
-		// equivalent to slice of strings
-		return DeclarationSpecifiers(arg, []types.Pointer{0}, constants.DECL_SLICE)
-	}
-
 	return DeclarationSpecifiers(arg, []types.Pointer{0}, constants.DECL_BASIC)
 }
 
@@ -93,7 +88,7 @@ func DeclarationSpecifiersStruct(prgrm *ast.CXProgram, ident string, pkgName str
 		if err != nil {
 			prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeMessage, currentFile, lineNo, column, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(err.Error())})
 
-			return declarationSpecifiersPlaceholder(prgrm, currentFile, lineNo)
+			return declarationSpecifiersMissing(prgrm, currentFile, lineNo)
 		}
 
 		strct, err = prgrm.GetStruct(identGid, imp.Name)
@@ -101,21 +96,24 @@ func DeclarationSpecifiersStruct(prgrm *ast.CXProgram, ident string, pkgName str
 			// A package whose import failed has no types, and its import is the
 			// error. Its uses report nothing more.
 			if prgrm.CXProgramImportFailed(imp.Name) {
-				placeholder := declarationSpecifiersPlaceholder(prgrm, currentFile, lineNo)
-				placeholder.Type = types.INVALID
-				return placeholder
+				return declarationSpecifiersMissing(prgrm, currentFile, lineNo)
 			}
 			prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeMessage, currentFile, lineNo, column, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(err.Error())})
 
-			return declarationSpecifiersPlaceholder(prgrm, currentFile, lineNo)
+			return declarationSpecifiersMissing(prgrm, currentFile, lineNo)
 		}
 	} else {
-		// custom type in the current package
+		// custom type in the current package, or one an import into scope brings in
 		strct, err = prgrm.GetStruct(identGid, pkg.Name)
+		if err != nil {
+			if scopedStruct := importScopedStruct(prgrm, pkg, currentFile, identGid); scopedStruct != nil {
+				strct, err = scopedStruct, nil
+			}
+		}
 		if err != nil {
 			prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeMessage, currentFile, lineNo, column, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(err.Error())})
 
-			return declarationSpecifiersPlaceholder(prgrm, currentFile, lineNo)
+			return declarationSpecifiersMissing(prgrm, currentFile, lineNo)
 		}
 	}
 
@@ -127,6 +125,15 @@ func DeclarationSpecifiersStruct(prgrm *ast.CXProgram, ident string, pkgName str
 	arg.DeclarationSpecifiers = append(arg.DeclarationSpecifiers, constants.DECL_STRUCT)
 
 	return arg
+}
+
+// declarationSpecifiersMissing stands in for a type that does not exist, after
+// its error. The variables of the type are declared types.INVALID, so their
+// uses report nothing more.
+func declarationSpecifiersMissing(prgrm *ast.CXProgram, currentFile ast.SourceFileGid, lineNo int) *ast.CXArgument {
+	placeholder := declarationSpecifiersPlaceholder(prgrm, currentFile, lineNo)
+	placeholder.Type = types.INVALID
+	return placeholder
 }
 
 // declarationSpecifiersPlaceholder stands in for a type that failed to resolve
@@ -150,7 +157,9 @@ func declarationArgSize(arg *ast.CXArgument) (types.Pointer, bool) {
 		switch arg.DeclarationSpecifiers[i] {
 		case constants.DECL_ARRAY:
 			total, lengths := uint64(arg.Size), arg.Lengths
-			if dims := arg.ArraySliceDimensions(); dims > 0 {
+			if direct, behind := arg.DirectDimensions(); behind {
+				total, lengths = uint64(types.POINTER_SIZE), lengths[:direct]
+			} else if dims := arg.ArraySliceDimensions(); dims > 0 {
 				total, lengths = uint64(types.POINTER_SIZE), lengths[:dims]
 			}
 			for _, length := range lengths {

@@ -3,8 +3,6 @@ package cxparsering
 import (
 	"bytes"
 	"errors"
-	"io"
-	"os"
 	"strings"
 
 	"github.com/skycoin/skycoin-cx/t0-types"
@@ -14,46 +12,17 @@ import (
 
 	"github.com/skycoin/skycoin-cx/t1-profiling" // thin: only CleanupAndExit, StartProfile, StopProfile; no depth gain
 	"github.com/skycoin/skycoin-cx/t4-actions"
-	"github.com/skycoin/skycoin-cx/t5-cx-runtime-printer"                // thin: only PrinterCompileErrorsPrint; no depth gain
+	"github.com/skycoin/skycoin-cx/t4-cx-runtime-printer"                // thin: only PrinterCompileErrorsPrint; no depth gain
 	cxpartialparsing "github.com/skycoin/skycoin-cx/t5-cxpartialparsing" // thin: only CurrentFile, Parse, Program; no depth gain
 )
-
-/*
-		ParseSourceCode takes a group of files representing CX `sourceCode` and
-	 	parses it into CX program structures for `AST`.
-
-		 ParseSourceCode performs the steps
-
-		 step 1 :  preliminarystage
-
-		 step 2 :  passone
-
-		 step 2 : passtwo
-*/
-func ParseSourceCode(sourceCode []*os.File, fileNames []string) {
-	/*
-		Copy the contents of the file pointers containing the CX source
-		code into sourceCodeStrings
-	*/
-	sourceCodeStrings := make([]string, len(sourceCode))
-	for i, source := range sourceCode {
-		tmp := bytes.NewBuffer(nil)
-		io.Copy(tmp, source)
-		sourceCodeStrings[i] = tmp.String()
-	}
-
-	if err := ParseSourceStrings(sourceCodeStrings, fileNames); err != nil {
-		profiling.CleanupAndExit(types.CX_COMPILATION_ERROR)
-	}
-}
 
 // ErrCompilation is returned by ParseSourceStrings when the source has
 // parse or compile errors. The errors themselves are printed to stdout.
 var ErrCompilation = errors.New("compilation error")
 
 // ParseSourceStrings parses CX source held in memory into actions.AST.
-// Unlike ParseSourceCode it returns on errors instead of exiting, so the
-// parser can be embedded in a long running process.
+// It returns on errors instead of exiting, so the parser can be embedded in
+// a long running process.
 func ParseSourceStrings(sourceCodeStrings []string, fileNames []string) error {
 	// The compile errors print on return, and before a panic of the compiler.
 	defer func() { printer.PrinterCompileErrorsPrint(actions.AST) }()
@@ -92,6 +61,7 @@ func parseSourceStrings(sourceCodeStrings []string, fileNames []string) error {
 	}
 	for _, pkg := range packages {
 		actions.PackageRedeclarationCheck(actions.AST, pkg)
+		actions.ImportScopedCheck(actions.AST, pkg)
 	}
 	/*
 		Adding global variables `OS_ARGS` to the `os` (operating system)
@@ -125,7 +95,7 @@ func parseSourceStrings(sourceCodeStrings []string, fileNames []string) error {
 		actions.AST.CxIrState.CxIrStateManagerGrowBoundary()
 
 		/*
-			Because of an unkown reason, sometimes some CX programs
+			Because of an unknown reason, sometimes some CX programs
 			throw an error related to a premature EOF (particularly in Windows).
 			Adding a newline character solves this.
 		*/
@@ -145,12 +115,14 @@ func parseSourceStrings(sourceCodeStrings []string, fileNames []string) error {
 
 		profiling.StartProfile(actions.AST.CXProgramSourceFileText(actions.CurrentFile))
 
+		actions.ImportScopedDirectivesRead(actions.CurrentFile, source)
 		parseErrors += Passtwo(b)
 
 		profiling.StopProfile(actions.AST.CXProgramSourceFileText(actions.CurrentFile))
 	}
 
 	profiling.StopProfile("4. passtwo")
+	actions.AffordanceLiteralsResolve(actions.AST)
 	actions.AST.CxIrState.CxIrStateManagerGrowBoundary()
 
 	if globals.FoundCompileErrors || parseErrors > 0 {

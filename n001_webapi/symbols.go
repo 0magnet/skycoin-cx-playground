@@ -47,7 +47,7 @@ func extractExportedSymbols(prgrm *ast.CXProgram, pkg *ast.CXPackage) ExportedSy
 	}
 
 	for _, fIdx := range pkg.Functions {
-		f := prgrm.GetFunctionFromArray(fIdx)
+		f := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fIdx)
 
 		if isExported(prgrm.CXProgramNameText(f.Name)) {
 			resp.Functions = append(resp.Functions, displayCXFunction(prgrm, pkg, f))

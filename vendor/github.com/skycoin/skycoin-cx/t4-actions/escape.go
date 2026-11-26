@@ -80,7 +80,7 @@ func escapeAnalyze(prgrm *ast.CXProgram, params []escapeParam, results []*ast.CX
 		if op == nil {
 			continue
 		}
-		if operator := prgrm.GetFunctionFromArray(op.Operator); operator != nil {
+		if operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(op.Operator); operator != nil {
 			state.escapeLoopAdd(i, op, operator)
 			continue
 		}
@@ -156,7 +156,7 @@ func (state *escapeState) escapeExpression(expr *ast.CXExpression) {
 	if op == nil {
 		return
 	}
-	operator := prgrm.GetFunctionFromArray(op.Operator)
+	operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(op.Operator)
 	inputs := op.GetInputs(prgrm)
 	outputs := op.GetOutputs(prgrm)
 	switch {
@@ -186,8 +186,8 @@ func (state *escapeState) escapeExpression(expr *ast.CXExpression) {
 // escapeOpcodeStores reports whether a built-in stores its inputs in the
 // heap, as append does.
 func escapeOpcodeStores(opcode int) bool {
-	switch ast.OpNames[opcode] {
-	case "append", "insert", "resize", "remove", "copy":
+	switch opcode {
+	case constants.OP_APPEND, constants.OP_INSERT, constants.OP_RESIZE, constants.OP_REMOVE, constants.OP_COPY:
 		return true
 	}
 	return false
@@ -244,7 +244,7 @@ func (state *escapeState) escapeMethod(receiverIdx ast.CXTypeSignatureIndex) *as
 	if err != nil {
 		return nil
 	}
-	return prgrm.GetFunctionFromArray(fnIdx)
+	return prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 }
 
 // escapeCallArgument handles sources passed as input i of fn. Only a function
