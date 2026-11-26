@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/skycoin/skycoin-cx/t0-types"
+	// GCREACH: t3-ast owns the heap and the GC roots. This file allocates strs, which
+	// adds to the GC pressure, see docs/GarbageCollector.md.
 	"github.com/skycoin/skycoin-cx/t3-ast"
 )
 
@@ -17,6 +19,7 @@ func AssertFailed() bool {
 }
 
 // TODO: Rework
+// VIOLATION STRHOT-118: E, the text of a failed assert, built only when it fails, #412.
 func assert(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) (same bool) {
 	var byts1, byts2 []byte
 	var inp0 *ast.CXArgument
@@ -26,8 +29,8 @@ func assert(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) (
 		inp0 = prgrm.GetCXArgFromArray(ast.CXArgumentIndex(inputs[0].TypeSignature.Meta))
 
 		if inp0.Type == types.STR || inp0.PointerTargetType == types.STR {
-			byts1 = []byte(inputs[0].Get_str(prgrm))
-			byts2 = []byte(inputs[1].Get_str(prgrm))
+			byts1 = inputs[0].Get_str_bytes(prgrm)
+			byts2 = inputs[1].Get_str_bytes(prgrm)
 		} else {
 			byts1 = inputs[0].Get_bytes(prgrm)
 			byts2 = inputs[1].Get_bytes(prgrm)
@@ -62,8 +65,8 @@ func assert(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) (
 		}
 
 		if isStr {
-			byts1 = []byte(inputs[0].Get_str(prgrm))
-			byts2 = []byte(inputs[1].Get_str(prgrm))
+			byts1 = inputs[0].Get_str_bytes(prgrm)
+			byts2 = inputs[1].Get_str_bytes(prgrm)
 		} else {
 			byts1 = inputs[0].Get_bytes(prgrm)
 			byts2 = inputs[1].Get_bytes(prgrm)
@@ -73,14 +76,13 @@ func assert(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) (
 	}
 
 	same = bytes.Equal(byts1, byts2)
-	message := inputs[2].Get_str(prgrm)
-
 	if !same {
+		message := inputs[2].Get_str_bytes(prgrm)
 		call := prgrm.GetCurrentCall()
 		// expr := call.Operator.Expressions[call.Line]
-		cxLine, _ := prgrm.GetPreviousCXLine(call.Operator.Expressions, call.Line)
+		cxLine, _ := prgrm.GetPreviousCXLine(prgrm.CxIrState.CXFunctionMng.CXFunctionGet(call.Operator).Expressions, call.Line)
 
-		if message != "" {
+		if len(message) != 0 {
 			fmt.Printf("%s: %d: result was not equal to the expected value; %s\n", prgrm.CXProgramSourceFileText(cxLine.FileName), cxLine.LineNumber, message)
 		} else {
 			fmt.Printf("%s: %d: result was not equal to the expected value\n", prgrm.CXProgramSourceFileText(cxLine.FileName), cxLine.LineNumber)
@@ -91,16 +93,16 @@ func assert(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) (
 	return same
 }
 
-func opAssertValue(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpAssertValue(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	same := assert(prgrm, inputs, outputs)
 	outputs[0].Set_bool(prgrm, same)
 }
 
-func opTest(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpTest(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	assert(prgrm, inputs, outputs)
 }
 
-func opPanic(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpPanic(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	if !assert(prgrm, inputs, outputs) {
 		panic(types.CX_ASSERT)
 	}
@@ -117,15 +119,16 @@ func panicIf(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue, 
 }
 
 // panic with CX_ASSERT exit code if condition is true
-func opPanicIf(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpPanicIf(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	panicIf(prgrm, inputs, outputs, true)
 }
 
 // panic with CX_ASSERT exit code if condition is false
-func opPanicIfNot(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+func OpPanicIfNot(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	panicIf(prgrm, inputs, outputs, false)
 }
 
-func opStrError(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
+// VIOLATION STRHOT-120: B, the text of an error code, #412.
+func OpStrError(prgrm *ast.CXProgram, inputs []ast.CXValue, outputs []ast.CXValue) {
 	outputs[0].Set_str(prgrm, ast.ErrorString(int(inputs[0].Get_i32(prgrm))))
 }

@@ -3,6 +3,7 @@ package partialparsing
 var KeywordMap map[string]int = map[string]int{
 	"func":      FUNC,
 	"var":       VAR,
+	"global":    GLOBAL,
 	"package":   PACKAGE,
 	"if":        IF,
 	"else":      ELSE,
@@ -41,7 +42,6 @@ var KeywordMap map[string]int = map[string]int{
 	":dp":       DPROGRAM,
 	":dProgram": DPROGRAM,
 	":rem":      REM,
-	":aff":      CAFF,
 	"def":       DEF,
 	"clauses":   CLAUSES,
 	"field":     FIELD,

@@ -23,9 +23,7 @@ func PostfixExpressionArray(prgrm *ast.CXProgram, prevExprs []ast.CXExpression, 
 	var elt *ast.CXArgument
 
 	prevExpressionIdx := prevExprs[len(prevExprs)-1].Index
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1094.
-	prevExpressionOperator := prgrm.GetFunctionFromArray(prgrm.CXAtomicOps[prevExpressionIdx].Operator)
+	prevExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(prgrm.CXAtomicOps[prevExpressionIdx].Operator)
 	prevExprCXLine, _ := prgrm.GetPreviousCXLine(prevExprs, len(prevExprs)-1)
 
 	if prevExpressionOperator != nil && len(prgrm.CXAtomicOps[prevExpressionIdx].GetOutputs(prgrm)) == 0 {
@@ -185,9 +183,7 @@ func PostfixExpressionArray(prgrm *ast.CXProgram, prevExprs []ast.CXExpression, 
 	}
 
 	postExpressionIdx := postExprs[len(postExprs)-1].Index
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1123.
-	postExpressionOperator := prgrm.GetFunctionFromArray(prgrm.CXAtomicOps[postExpressionIdx].Operator)
+	postExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(prgrm.CXAtomicOps[postExpressionIdx].Operator)
 	postExpressionOperatorOutputs := postExpressionOperator.GetOutputs(prgrm)
 
 	if prevExpressionOutputArg != nil && len(prevExpressionOutputArg.Fields) > 0 {
@@ -342,10 +338,13 @@ func PostfixExpressionArray(prgrm *ast.CXProgram, prevExprs []ast.CXExpression, 
 //					expression.
 func PostfixExpressionNative(prgrm *ast.CXProgram, typeCode types.Code, opStrCode string) []ast.CXExpression {
 	// these will always be native functions
-	opName := typeCode.Name() + "." + opStrCode
-	opCode, ok := ast.OpCodes[opName]
-	if !ok && !renamedOpcodeRecord(prgrm, CurrentFile, LineNo, opName) {
-		prgrm.CXProgramCompileErrorAdd(ast.CompileErrorCodeFunctionMissing, CurrentFile, LineNo, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(opName)})
+	native, ok := prgrm.CXProgramNativeFind(&ast.NativeNames, prgrm.CXProgramNameIntern(typeCode.Name()), stringpool.StringGidNil, prgrm.CXProgramNameIntern(opStrCode))
+	opName := ""
+	if !ok {
+		opName = typeCode.Name() + "." + opStrCode
+		if !renamedOpcodeRecord(prgrm, CurrentFile, LineNo, opName) {
+			prgrm.CXProgramCompileErrorAdd(ast.CompileErrorCodeFunctionMissing, CurrentFile, LineNo, ast.CompileErrorOperands{prgrm.CXProgramCompileErrorText(opName)})
+		}
 	}
 
 	// OBJMODEL: state.CXExpressionMng.CXExpressionAlloc(), phase 4 #346.
@@ -355,7 +354,7 @@ func PostfixExpressionNative(prgrm *ast.CXProgram, typeCode types.Code, opStrCod
 	// Now a constructor call, site S1145.
 	var expr *ast.CXExpression
 	if ok {
-		expr = ast.MakeAtomicOperatorExpression(prgrm, ast.Natives[opCode])
+		expr = ast.MakeAtomicOperatorExpression(prgrm, ast.NativeFunctionOf(prgrm, native.NativeNameEntryCode))
 	} else {
 		// The call of a missing native is typed by a stand in, see invalidFunctionIndex.
 		expr = ast.MakeAtomicOperatorExpression(prgrm, nil)
@@ -396,9 +395,7 @@ func PostfixExpressionEmptyFunCall(prgrm *ast.CXProgram, prevExprs []ast.CXExpre
 		panic(err)
 	}
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1148.
-	prevExpressionOperator := prgrm.GetFunctionFromArray(prevExpression.Operator)
+	prevExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(prevExpression.Operator)
 
 	var firstPrevExpressionIdx int
 	for i := 0; i < len(prevExprs); i++ {
@@ -430,14 +427,12 @@ func PostfixExpressionEmptyFunCall(prgrm *ast.CXProgram, prevExprs []ast.CXExpre
 		// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 		// Now an arena getter, site S1153.
 		prevExpressionOutputTypeSig := prgrm.GetCXTypeSignatureFromArray(prevExpression.GetOutputs(prgrm)[0])
-		if opCode, ok := ast.OpCodes[prgrm.CXProgramNameText(prevExpressionOutputTypeSig.Name)]; ok && !functionDeclared(prgrm, prevExpressionOutputTypeSig) {
+		if native, ok := prgrm.CXProgramNativeFind(&ast.NativeNames, stringpool.StringGidNil, stringpool.StringGidNil, prevExpressionOutputTypeSig.Name); ok && !functionDeclared(prgrm, prevExpressionOutputTypeSig) {
 			if pkg, err := prgrm.GetCurrentPackage(); err == nil {
 				prgrm.CXAtomicOps[firstPrevExpressionIdx].Package = ast.CXPackageIndex(pkg.Index)
 			}
 			prgrm.CXAtomicOps[firstPrevExpressionIdx].Outputs = nil
-			// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-			// Now an arena insert, site S1154.
-			opIdx := prgrm.AddNativeFunctionInArray(ast.Natives[opCode])
+			opIdx := prgrm.AddNativeFunctionInArray(ast.NativeFunctionOf(prgrm, native.NativeNameEntryCode))
 			prgrm.CXAtomicOps[firstPrevExpressionIdx].Operator = opIdx
 		}
 
@@ -467,9 +462,7 @@ func PostfixExpressionFunCall(prgrm *ast.CXProgram, prevExprs []ast.CXExpression
 	if err != nil {
 		panic(err)
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1155.
-	lastPrevExpressionOperator := prgrm.GetFunctionFromArray(lastPrevExpression.Operator)
+	lastPrevExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(lastPrevExpression.Operator)
 
 	firstPrevExpressionIdx := prevExprs[0].Index
 
@@ -498,14 +491,12 @@ func PostfixExpressionFunCall(prgrm *ast.CXProgram, prevExprs []ast.CXExpression
 		// prevExprs[len(prevExprs) - 1].IsMethodCall = true
 
 	} else if lastPrevExpressionOperator == nil {
-		if opCode, ok := ast.OpCodes[prgrm.CXProgramNameText(lastPrevExpressionOutputTypeSig.Name)]; ok && !functionDeclared(prgrm, lastPrevExpressionOutputTypeSig) {
+		if native, ok := prgrm.CXProgramNativeFind(&ast.NativeNames, stringpool.StringGidNil, stringpool.StringGidNil, lastPrevExpressionOutputTypeSig.Name); ok && !functionDeclared(prgrm, lastPrevExpressionOutputTypeSig) {
 			if pkg, err := prgrm.GetCurrentPackage(); err == nil {
 				prgrm.CXAtomicOps[firstPrevExpressionIdx].Package = ast.CXPackageIndex(pkg.Index)
 			}
 			prgrm.CXAtomicOps[firstPrevExpressionIdx].Outputs = nil
-			// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-			// Now an arena insert, site S1159.
-			opIdx := prgrm.AddNativeFunctionInArray(ast.Natives[opCode])
+			opIdx := prgrm.AddNativeFunctionInArray(ast.NativeFunctionOf(prgrm, native.NativeNameEntryCode))
 			prgrm.CXAtomicOps[firstPrevExpressionIdx].Operator = opIdx
 		}
 
@@ -536,11 +527,11 @@ func PostfixExpressionIncDec(prgrm *ast.CXProgram, prevExprs []ast.CXExpression,
 	if isInc {
 		// OBJMODEL: state.CXExpressionMng.CXExpressionAlloc(), phase 4 #346.
 		// Now a constructor call, site S1161.
-		expr = ast.MakeAtomicOperatorExpression(prgrm, ast.Natives[constants.OP_ADD])
+		expr = ast.MakeAtomicOperatorExpression(prgrm, ast.NativeFunctionOf(prgrm, constants.OP_ADD))
 	} else {
 		// OBJMODEL: state.CXExpressionMng.CXExpressionAlloc(), phase 4 #346.
 		// Now a constructor call, site S1162.
-		expr = ast.MakeAtomicOperatorExpression(prgrm, ast.Natives[constants.OP_SUB])
+		expr = ast.MakeAtomicOperatorExpression(prgrm, ast.NativeFunctionOf(prgrm, constants.OP_SUB))
 	}
 
 	lastPrevExpression, err := prgrm.GetCXAtomicOpFromExpressions(prevExprs, len(prevExprs)-1)
@@ -577,9 +568,7 @@ func PostfixExpressionField(prgrm *ast.CXProgram, prevExprs []ast.CXExpression, 
 	lastExpr := prevExprs[len(prevExprs)-1]
 
 	lastExpressionIdx := lastExpr.Index
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1165.
-	lastExpressionOperator := prgrm.GetFunctionFromArray(prgrm.CXAtomicOps[lastExpressionIdx].Operator)
+	lastExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(prgrm.CXAtomicOps[lastExpressionIdx].Operator)
 
 	lastExprCXLine, _ := prgrm.GetPreviousCXLine(prevExprs, len(prevExprs)-1)
 
@@ -666,11 +655,8 @@ func PostfixExpressionField(prgrm *ast.CXProgram, prevExprs []ast.CXExpression, 
 		// this way we avoid considering these arguments as module names
 
 		if cxpackages.IsDefaultPackage(prgrm.CXProgramNameText(leftExprOutputTypeSig.Name)) {
-			//TODO: constants.ConstCodes[prgrm.CXProgramNameText(leftExprOutputTypeSig.Name)+"."+ident]
-			//TODO: only play ConstCodes are used
-			//Is used for constant declaration? But only for core packages?
-			if code, ok := ConstCodes[prgrm.CXProgramNameText(leftExprOutputTypeSig.Name)+"."+ident]; ok {
-				constant := Constants[code]
+			if constantName, ok := prgrm.CXProgramNativeFind(&ConstNames, leftExprOutputTypeSig.Name, stringpool.StringGidNil, identGid); ok {
+				constant := Constants[constantName.NativeNameEntryCode]
 				valArg := WritePrimary(prgrm, constant.Type, constant.Value, false)
 
 				// TODO: to be removed and implemented with correct process to change the index
@@ -704,11 +690,11 @@ func PostfixExpressionField(prgrm *ast.CXProgram, prevExprs []ast.CXExpression, 
 				}
 
 				return prevExprs
-			} else if _, ok := ast.OpCodes[prgrm.CXProgramNameText(leftExprOutputTypeSig.Name)+"."+ident]; ok {
+			} else if native, ok := prgrm.CXProgramNativeFind(&ast.NativeNames, leftExprOutputTypeSig.Name, stringpool.StringGidNil, identGid); ok {
 				// then it's a native
 				// TODO: we'd be referring to the function itself, not a function call
 				// (functions as first-class objects)
-				leftExprOutputTypeSigName := prgrm.CXProgramNameIntern(prgrm.CXProgramNameText(leftExprOutputTypeSig.Name) + "." + ident)
+				leftExprOutputTypeSigName := prgrm.CXProgramNameIntern(native.NativeNameEntryText)
 				leftExprOutputTypeSig.Name = leftExprOutputTypeSigName
 				if leftExprOutputTypeSig.Type == ast.TYPE_CXARGUMENT_DEPRECATE {
 					leftExprIdx := leftExprOutputTypeSig.Meta
@@ -937,7 +923,7 @@ func MethodCallStatement(prgrm *ast.CXProgram, exprs []ast.CXExpression) []ast.C
 	}
 	readOp := &prgrm.CXAtomicOps[exprs[len(exprs)-1].Index]
 	callOp := &prgrm.CXAtomicOps[exprs[len(exprs)-2].Index]
-	if prgrm.GetFunctionFromArray(readOp.Operator) != nil || len(callOp.GetOutputs(prgrm)) != 1 || len(readOp.GetOutputs(prgrm)) != 1 {
+	if prgrm.CxIrState.CxIrStateFunctionGetOrNil(readOp.Operator) != nil || len(callOp.GetOutputs(prgrm)) != 1 || len(readOp.GetOutputs(prgrm)) != 1 {
 		return exprs
 	}
 	resultTypeSig := prgrm.GetCXTypeSignatureFromArray(callOp.GetOutputs(prgrm)[0])

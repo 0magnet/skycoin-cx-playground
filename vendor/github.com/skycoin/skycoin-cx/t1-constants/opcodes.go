@@ -81,82 +81,82 @@ var OpcodeLifecycleTable = [...]OpcodeLifecycle{
 	{131, "bool.or", 0, 0, 0},
 	{132, "bool.and", 0, 0, 0},
 	{133, "bool.not", 0, 0, 0},
-	{134, "cipher.GenerateKeyPair", 0, 0, 0},
+	{134, "cipher.GenerateKeyPair", 0, 2611240003, 2711240001},
 	{135, "time.Sleep", 0, 0, 0},
 	{136, "time.UnixMilli", 0, 0, 0},
 	{137, "time.UnixNano", 0, 0, 0},
-	{138, "os.GetWorkingDirectory", 0, 0, 0},
-	{139, "os.LogFile", 0, 0, 0},
-	{140, "os.Open", 0, 0, 0},
-	{141, "os.Create", 0, 0, 0},
-	{142, "os.Close", 0, 0, 0},
-	{143, "os.Seek", 0, 0, 0},
-	{144, "os.ReadStr", 0, 0, 0},
-	{145, "os.ReadF64", 0, 0, 0},
-	{146, "os.ReadF32", 0, 0, 0},
-	{147, "os.ReadUI64", 0, 0, 0},
-	{148, "os.ReadUI32", 0, 0, 0},
-	{149, "os.ReadUI16", 0, 0, 0},
-	{150, "os.ReadUI8", 0, 0, 0},
-	{151, "os.ReadI64", 0, 0, 0},
-	{152, "os.ReadI32", 0, 0, 0},
-	{153, "os.ReadI16", 0, 0, 0},
-	{154, "os.ReadI8", 0, 0, 0},
-	{155, "os.ReadBOOL", 0, 0, 0},
-	{156, "os.ReadF64Slice", 0, 0, 0},
-	{157, "os.ReadF32Slice", 0, 0, 0},
-	{158, "os.ReadUI64Slice", 0, 0, 0},
-	{159, "os.ReadUI32Slice", 0, 0, 0},
-	{160, "os.ReadUI16Slice", 0, 0, 0},
-	{161, "os.ReadUI8Slice", 0, 0, 0},
-	{162, "os.ReadI64Slice", 0, 0, 0},
-	{163, "os.ReadI32Slice", 0, 0, 0},
-	{164, "os.ReadI16Slice", 0, 0, 0},
-	{165, "os.ReadI8Slice", 0, 0, 0},
-	{166, "os.ReadAllText", 0, 0, 0},
-	{167, "os.WriteStr", 0, 0, 0},
-	{168, "os.WriteF64", 0, 0, 0},
-	{169, "os.WriteF32", 0, 0, 0},
-	{170, "os.WriteUI64", 0, 0, 0},
-	{171, "os.WriteUI32", 0, 0, 0},
-	{172, "os.WriteUI16", 0, 0, 0},
-	{173, "os.WriteUI8", 0, 0, 0},
-	{174, "os.WriteI64", 0, 0, 0},
-	{175, "os.WriteI32", 0, 0, 0},
-	{176, "os.WriteI16", 0, 0, 0},
-	{177, "os.WriteI8", 0, 0, 0},
-	{178, "os.WriteBOOL", 0, 0, 0},
-	{179, "os.WriteF64Slice", 0, 0, 0},
-	{180, "os.WriteF32Slice", 0, 0, 0},
-	{181, "os.WriteUI64Slice", 0, 0, 0},
-	{182, "os.WriteUI32Slice", 0, 0, 0},
-	{183, "os.WriteUI16Slice", 0, 0, 0},
-	{184, "os.WriteUI8Slice", 0, 0, 0},
-	{185, "os.WriteI64Slice", 0, 0, 0},
-	{186, "os.WriteI32Slice", 0, 0, 0},
-	{187, "os.WriteI16Slice", 0, 0, 0},
-	{188, "os.WriteI8Slice", 0, 0, 0},
-	{189, "os.Run", 0, 0, 0},
+	{138, "os.GetWorkingDirectory", 0, 2611230001, 2711230001},
+	{139, "os.LogFile", 0, 2611230001, 2711230001},
+	{140, "os.Open", 0, 2611230001, 2711230001},
+	{141, "os.Create", 0, 2611230001, 2711230001},
+	{142, "os.Close", 0, 2611230001, 2711230001},
+	{143, "os.Seek", 0, 2611230001, 2711230001},
+	{144, "os.ReadStr", 0, 2611230001, 2711230001},
+	{145, "os.ReadF64", 0, 2611230001, 2711230001},
+	{146, "os.ReadF32", 0, 2611230001, 2711230001},
+	{147, "os.ReadUI64", 0, 2611230001, 2711230001},
+	{148, "os.ReadUI32", 0, 2611230001, 2711230001},
+	{149, "os.ReadUI16", 0, 2611230001, 2711230001},
+	{150, "os.ReadUI8", 0, 2611230001, 2711230001},
+	{151, "os.ReadI64", 0, 2611230001, 2711230001},
+	{152, "os.ReadI32", 0, 2611230001, 2711230001},
+	{153, "os.ReadI16", 0, 2611230001, 2711230001},
+	{154, "os.ReadI8", 0, 2611230001, 2711230001},
+	{155, "os.ReadBOOL", 0, 2611230001, 2711230001},
+	{156, "os.ReadF64Slice", 0, 2611230001, 2711230001},
+	{157, "os.ReadF32Slice", 0, 2611230001, 2711230001},
+	{158, "os.ReadUI64Slice", 0, 2611230001, 2711230001},
+	{159, "os.ReadUI32Slice", 0, 2611230001, 2711230001},
+	{160, "os.ReadUI16Slice", 0, 2611230001, 2711230001},
+	{161, "os.ReadUI8Slice", 0, 2611230001, 2711230001},
+	{162, "os.ReadI64Slice", 0, 2611230001, 2711230001},
+	{163, "os.ReadI32Slice", 0, 2611230001, 2711230001},
+	{164, "os.ReadI16Slice", 0, 2611230001, 2711230001},
+	{165, "os.ReadI8Slice", 0, 2611230001, 2711230001},
+	{166, "os.ReadAllText", 0, 2611230001, 2711230001},
+	{167, "os.WriteStr", 0, 2611230001, 2711230001},
+	{168, "os.WriteF64", 0, 2611230001, 2711230001},
+	{169, "os.WriteF32", 0, 2611230001, 2711230001},
+	{170, "os.WriteUI64", 0, 2611230001, 2711230001},
+	{171, "os.WriteUI32", 0, 2611230001, 2711230001},
+	{172, "os.WriteUI16", 0, 2611230001, 2711230001},
+	{173, "os.WriteUI8", 0, 2611230001, 2711230001},
+	{174, "os.WriteI64", 0, 2611230001, 2711230001},
+	{175, "os.WriteI32", 0, 2611230001, 2711230001},
+	{176, "os.WriteI16", 0, 2611230001, 2711230001},
+	{177, "os.WriteI8", 0, 2611230001, 2711230001},
+	{178, "os.WriteBOOL", 0, 2611230001, 2711230001},
+	{179, "os.WriteF64Slice", 0, 2611230001, 2711230001},
+	{180, "os.WriteF32Slice", 0, 2611230001, 2711230001},
+	{181, "os.WriteUI64Slice", 0, 2611230001, 2711230001},
+	{182, "os.WriteUI32Slice", 0, 2611230001, 2711230001},
+	{183, "os.WriteUI16Slice", 0, 2611230001, 2711230001},
+	{184, "os.WriteUI8Slice", 0, 2611230001, 2711230001},
+	{185, "os.WriteI64Slice", 0, 2611230001, 2711230001},
+	{186, "os.WriteI32Slice", 0, 2611230001, 2711230001},
+	{187, "os.WriteI16Slice", 0, 2611230001, 2711230001},
+	{188, "os.WriteI8Slice", 0, 2611230001, 2711230001},
+	{189, "os.Run", 0, 2611230001, 2711230001},
 	{190, "os.Exit", 0, 0, 0},
-	{191, "json.Open", 0, 0, 0},
-	{192, "json.Close", 0, 0, 0},
-	{193, "json.More", 0, 0, 0},
-	{194, "json.Next", 0, 0, 0},
-	{195, "json.Type", 0, 0, 0},
-	{196, "json.Delim", 0, 0, 0},
-	{197, "json.Bool", 0, 0, 0},
-	{198, "json.Float64", 0, 0, 0},
-	{199, "json.Int64", 0, 0, 0},
-	{200, "json.Str", 0, 0, 0},
-	{201, "StartCPUProfile", 0, 0, 0},
-	{202, "StopCPUProfile", 0, 0, 0},
+	{191, "json.Open", 0, 2611230001, 2711230001},
+	{192, "json.Close", 0, 2611230001, 2711230001},
+	{193, "json.More", 0, 2611230001, 2711230001},
+	{194, "json.Next", 0, 2611230001, 2711230001},
+	{195, "json.Type", 0, 2611230001, 2711230001},
+	{196, "json.Delim", 0, 2611230001, 2711230001},
+	{197, "json.Bool", 0, 2611230001, 2711230001},
+	{198, "json.Float64", 0, 2611230001, 2711230001},
+	{199, "json.Int64", 0, 2611230001, 2711230001},
+	{200, "json.Str", 0, 2611230001, 2711230001},
+	{201, "StartCPUProfile", 0, 2611230001, 2711230001},
+	{202, "StopCPUProfile", 0, 2611230001, 2711230001},
 	{203, "regexp.Compile", 0, 0, 0},
 	{204, "regexp.MustCompile", 0, 0, 0},
 	{205, "regexp.Regexp.Find", 0, 0, 0},
-	{206, "tcp.Dial", 0, 0, 0},
-	{207, "tcp.Listen", 0, 0, 0},
-	{208, "tcp.Accept", 0, 0, 0},
-	{209, "tcp.Close", 0, 0, 0},
+	{206, "tcp.Dial", 0, 2611230001, 2711230001},
+	{207, "tcp.Listen", 0, 2611230001, 2711230001},
+	{208, "tcp.Accept", 0, 2611230001, 2711230001},
+	{209, "tcp.Close", 0, 2611230001, 2711230001},
 	{210, "resize", 0, 0, 0},
 	{211, "insert", 0, 0, 0},
 	{212, "remove", 0, 0, 0},
@@ -527,8 +527,8 @@ var OpcodeLifecycleTable = [...]OpcodeLifecycle{
 	{577, "panicIf", 0, 0, 0},
 	{578, "panicIfNot", 0, 0, 0},
 	{579, "strerror", 0, 0, 0},
-	{580, "aff.print", 0, 0, 0},
-	{581, "aff.query", 0, 0, 0},
+	{580, "aff.print", 0, 2611250002, 2711250001},
+	{581, "aff.query", 0, 2611250002, 2711250001},
 	{582, "str.lt", 0, 2611200001, 2711200001},   // 582 str.lt: added 0000000000, deprecated 2611200001, reassignable from 2711200001
 	{583, "str.lteq", 0, 2611200001, 2711200001}, // 583 str.lteq: added 0000000000, deprecated 2611200001, reassignable from 2711200001
 	{584, "str.gt", 0, 2611200001, 2711200001},   // 584 str.gt: added 0000000000, deprecated 2611200001, reassignable from 2711200001
@@ -539,9 +539,9 @@ var OpcodeLifecycleTable = [...]OpcodeLifecycle{
 	{589, "ptr.eq", 2611200001, 0, 0},
 	{590, "ptr.uneq", 2611200001, 0, 0},
 	{591, "gl.Init", 0, 0, 0},
-	{592, "gl.Destroy", 0, 0, 0},
-	{593, "gl.Strs", 0, 0, 0},
-	{594, "gl.Free", 0, 0, 0},
+	{592, "gl.Destroy", 0, 2611240001, 2711240001},
+	{593, "gl.Strs", 0, 2611240001, 2711240001},
+	{594, "gl.Free", 0, 2611240001, 2711240001},
 	{595, "gl.NewTexture", 0, 0, 0},
 	{596, "gl.NewTextureCube", 0, 0, 0},
 	{597, "gl.NewGIF", 0, 0, 0},
@@ -740,6 +740,89 @@ var OpcodeLifecycleTable = [...]OpcodeLifecycle{
 	{790, "al.SourceState", 0, 0, 0},
 	{791, "al.SourceUnqueueBuffers", 0, 0, 0},
 	{792, "string.ByteLength", 2611200002, 0, 0},
+	{793, "string.BytesOfString", 2611200002, 0, 0},
+	{794, "string.StringOfBytes", 2611200002, 0, 0},
+	{795, "LibraryCall", 2611230001, 0, 0},
+	{796, "cipher.HashOfBytes", 2611250003, 0, 0},
+	{797, "cipher.HashStateNew", 2611250003, 0, 0},
+	{798, "cipher.HashStateWrite", 2611250003, 0, 0},
+	{799, "cipher.HashStateSum", 2611250003, 0, 0},
+	{800, "cipher.HashStateRelease", 2611250003, 0, 0},
+	{801, "cipher.SignatureVerify", 2611250003, 0, 0},
+	{802, "cipher.SignatureRecoverPubKey", 2611250003, 0, 0},
+	{803, "cipher.SignatureSign", 2611250003, 0, 0},
+	{804, "cipher.KeyPairGenerate", 2611250003, 0, 0},
+	{805, "net.Update", 2611250004, 0, 0},
+	{806, "net.ReadyCount", 2611250004, 0, 0},
+	{807, "net.ReadyNext", 2611250004, 0, 0},
+	{808, "net.Clock", 2611250004, 0, 0},
+	{809, "net.Read", 2611250004, 0, 0},
+	{810, "net.Write", 2611250004, 0, 0},
+	{811, "net.Close", 2611250004, 0, 0},
+	{812, "net.TimeoutSet", 2611250004, 0, 0},
+	{813, "net.TCPListen", 2611250004, 0, 0},
+	{814, "net.TCPDial", 2611250004, 0, 0},
+	{815, "net.UDPListen", 2611250004, 0, 0},
+	{816, "net.UDPDial", 2611250004, 0, 0},
+	{817, "net.UDPReadFrom", 2611250004, 0, 0},
+	{818, "net.UDPWriteTo", 2611250004, 0, 0},
+	{819, "net.UDPPeerResolve", 2611250004, 0, 0},
+	{820, "os.GetWorkingDirectory", 2611250005, 0, 0},
+	{821, "os.LogFile", 2611250005, 0, 0},
+	{822, "os.Open", 2611250005, 0, 0},
+	{823, "os.Create", 2611250005, 0, 0},
+	{824, "os.Close", 2611250005, 0, 0},
+	{825, "os.Seek", 2611250005, 0, 0},
+	{826, "os.ReadStr", 2611250005, 0, 0},
+	{827, "os.ReadF64", 2611250005, 0, 0},
+	{828, "os.ReadF32", 2611250005, 0, 0},
+	{829, "os.ReadUI64", 2611250005, 0, 0},
+	{830, "os.ReadUI32", 2611250005, 0, 0},
+	{831, "os.ReadUI16", 2611250005, 0, 0},
+	{832, "os.ReadUI8", 2611250005, 0, 0},
+	{833, "os.ReadI64", 2611250005, 0, 0},
+	{834, "os.ReadI32", 2611250005, 0, 0},
+	{835, "os.ReadI16", 2611250005, 0, 0},
+	{836, "os.ReadI8", 2611250005, 0, 0},
+	{837, "os.ReadBOOL", 2611250005, 0, 0},
+	{838, "os.ReadF64Slice", 2611250005, 0, 0},
+	{839, "os.ReadF32Slice", 2611250005, 0, 0},
+	{840, "os.ReadUI64Slice", 2611250005, 0, 0},
+	{841, "os.ReadUI32Slice", 2611250005, 0, 0},
+	{842, "os.ReadUI16Slice", 2611250005, 0, 0},
+	{843, "os.ReadUI8Slice", 2611250005, 0, 0},
+	{844, "os.ReadI64Slice", 2611250005, 0, 0},
+	{845, "os.ReadI32Slice", 2611250005, 0, 0},
+	{846, "os.ReadI16Slice", 2611250005, 0, 0},
+	{847, "os.ReadI8Slice", 2611250005, 0, 0},
+	{848, "os.ReadAllText", 2611250005, 0, 0},
+	{849, "os.WriteStr", 2611250005, 0, 0},
+	{850, "os.WriteF64", 2611250005, 0, 0},
+	{851, "os.WriteF32", 2611250005, 0, 0},
+	{852, "os.WriteUI64", 2611250005, 0, 0},
+	{853, "os.WriteUI32", 2611250005, 0, 0},
+	{854, "os.WriteUI16", 2611250005, 0, 0},
+	{855, "os.WriteUI8", 2611250005, 0, 0},
+	{856, "os.WriteI64", 2611250005, 0, 0},
+	{857, "os.WriteI32", 2611250005, 0, 0},
+	{858, "os.WriteI16", 2611250005, 0, 0},
+	{859, "os.WriteI8", 2611250005, 0, 0},
+	{860, "os.WriteBOOL", 2611250005, 0, 0},
+	{861, "os.WriteF64Slice", 2611250005, 0, 0},
+	{862, "os.WriteF32Slice", 2611250005, 0, 0},
+	{863, "os.WriteUI64Slice", 2611250005, 0, 0},
+	{864, "os.WriteUI32Slice", 2611250005, 0, 0},
+	{865, "os.WriteUI16Slice", 2611250005, 0, 0},
+	{866, "os.WriteUI8Slice", 2611250005, 0, 0},
+	{867, "os.WriteI64Slice", 2611250005, 0, 0},
+	{868, "os.WriteI32Slice", 2611250005, 0, 0},
+	{869, "os.WriteI16Slice", 2611250005, 0, 0},
+	{870, "os.WriteI8Slice", 2611250005, 0, 0},
+	{871, "StartCPUProfile", 2611250005, 0, 0},
+	{872, "StopCPUProfile", 2611250005, 0, 0},
+	{873, "os.OpenReadWrite", 2611250005, 0, 0},
+	{874, "os.Sync", 2611250005, 0, 0},
+	{875, "os.Remove", 2611250005, 0, 0},
 }
 
 // OpcodeLifecycle is one row of OpcodeLifecycleTable.
@@ -897,11 +980,108 @@ const (
 	OP_BOOL_AND          = 132
 	OP_BOOL_NOT          = 133
 	END_OF_NAMED_OPCODES = 134
+
+	// OP_LIBRARY_CALL calls function CXFunction.LibraryFunctionNumber of system
+	// library CXFunction.LibraryNumber, see libraries.go.
+	OP_LIBRARY_CALL = 795
+
+	// The cipher library, decision D119. Each function is its own opcode,
+	// run only when the run enables the library, see OpcodeLibraryOf.
+	OpcodeCipherHashOfBytes            = 796
+	OpcodeCipherHashStateNew           = 797
+	OpcodeCipherHashStateWrite         = 798
+	OpcodeCipherHashStateSum           = 799
+	OpcodeCipherHashStateRelease       = 800
+	OpcodeCipherSignatureVerify        = 801
+	OpcodeCipherSignatureRecoverPubKey = 802
+	OpcodeCipherSignatureSign          = 803
+	OpcodeCipherKeyPairGenerate        = 804
+
+	// The net library, decision D119.
+	OpcodeNetUpdate         = 805
+	OpcodeNetReadyCount     = 806
+	OpcodeNetReadyNext      = 807
+	OpcodeNetClock          = 808
+	OpcodeNetRead           = 809
+	OpcodeNetWrite          = 810
+	OpcodeNetClose          = 811
+	OpcodeNetTimeoutSet     = 812
+	OpcodeNetTCPListen      = 813
+	OpcodeNetTCPDial        = 814
+	OpcodeNetUDPListen      = 815
+	OpcodeNetUDPDial        = 816
+	OpcodeNetUDPReadFrom    = 817
+	OpcodeNetUDPWriteTo     = 818
+	OpcodeNetUDPPeerResolve = 819
+
+	// The file library, decision D119.
+	OpcodeFileGetWorkingDirectory = 820
+	OpcodeFileLogFile             = 821
+	OpcodeFileOpen                = 822
+	OpcodeFileCreate              = 823
+	OpcodeFileClose               = 824
+	OpcodeFileSeek                = 825
+	OpcodeFileReadStr             = 826
+	OpcodeFileReadF64             = 827
+	OpcodeFileReadF32             = 828
+	OpcodeFileReadUI64            = 829
+	OpcodeFileReadUI32            = 830
+	OpcodeFileReadUI16            = 831
+	OpcodeFileReadUI8             = 832
+	OpcodeFileReadI64             = 833
+	OpcodeFileReadI32             = 834
+	OpcodeFileReadI16             = 835
+	OpcodeFileReadI8              = 836
+	OpcodeFileReadBOOL            = 837
+	OpcodeFileReadF64Slice        = 838
+	OpcodeFileReadF32Slice        = 839
+	OpcodeFileReadUI64Slice       = 840
+	OpcodeFileReadUI32Slice       = 841
+	OpcodeFileReadUI16Slice       = 842
+	OpcodeFileReadUI8Slice        = 843
+	OpcodeFileReadI64Slice        = 844
+	OpcodeFileReadI32Slice        = 845
+	OpcodeFileReadI16Slice        = 846
+	OpcodeFileReadI8Slice         = 847
+	OpcodeFileReadAllText         = 848
+	OpcodeFileWriteStr            = 849
+	OpcodeFileWriteF64            = 850
+	OpcodeFileWriteF32            = 851
+	OpcodeFileWriteUI64           = 852
+	OpcodeFileWriteUI32           = 853
+	OpcodeFileWriteUI16           = 854
+	OpcodeFileWriteUI8            = 855
+	OpcodeFileWriteI64            = 856
+	OpcodeFileWriteI32            = 857
+	OpcodeFileWriteI16            = 858
+	OpcodeFileWriteI8             = 859
+	OpcodeFileWriteBOOL           = 860
+	OpcodeFileWriteF64Slice       = 861
+	OpcodeFileWriteF32Slice       = 862
+	OpcodeFileWriteUI64Slice      = 863
+	OpcodeFileWriteUI32Slice      = 864
+	OpcodeFileWriteUI16Slice      = 865
+	OpcodeFileWriteUI8Slice       = 866
+	OpcodeFileWriteI64Slice       = 867
+	OpcodeFileWriteI32Slice       = 868
+	OpcodeFileWriteI16Slice       = 869
+	OpcodeFileWriteI8Slice        = 870
+	OpcodeFileStartCPUProfile     = 871
+	OpcodeFileStopCPUProfile      = 872
+	OpcodeFileOpenReadWrite       = 873
+	OpcodeFileSync                = 874
+	OpcodeFileRemove              = 875
+
+	// The slice built-ins after append, which the compiler checks by number.
+	OP_RESIZE = 210
+	OP_INSERT = 211
+	OP_REMOVE = 212
+	OP_COPY   = 213
 )
 
-var (
-	// VIOLATION: state outside State. Owner: t1-constants; moves to CXNativeFunctionMng in phase 1.
-	START_PARSE_OPS int
-	// VIOLATION: state outside State. Owner: t1-constants; moves to CXNativeFunctionMng in phase 1.
-	END_PARSE_OPS int
+// The conversion opcodes, i8.str to f64.f32, lie strictly between these.
+// nolint golint
+const (
+	START_PARSE_OPS = 220
+	END_PARSE_OPS   = 321
 )

@@ -41,6 +41,12 @@ func DeclarePackage(prgrm *ast.CXProgram, pkgName string) {
 //	currentFile - the current cx source code file.
 //	lineNo - the current line number from the source code.
 func DeclareImport(prgrm *ast.CXProgram, impName string, currentFile ast.SourceFileGid, lineNo int) {
+	DeclareImportAt(prgrm, impName, currentFile, lineNo, prgrm.CXProgramCompileErrorColumn(currentFile, lineNo))
+}
+
+// DeclareImportAt is DeclareImport of the path at column, which a local
+// named like the package reports as the import it shadows (#486).
+func DeclareImportAt(prgrm *ast.CXProgram, impName string, currentFile ast.SourceFileGid, lineNo int, column int) {
 	// Make sure we are inside a package
 	pkg, err := prgrm.GetCurrentPackage()
 	if err != nil {
@@ -78,6 +84,7 @@ func DeclareImport(prgrm *ast.CXProgram, impName string, currentFile ast.SourceF
 	}
 
 	identGid := prgrm.CXProgramNameIntern(ident)
+	prgrm.CXProgramImportPositionAdd(pkg.Name, identGid, ast.CXProgramImportPosition{ImportFile: currentFile, ImportLine: lineNo, ImportColumn: column})
 
 	// If the package is already imported, then there is nothing more to be done.
 	if _, err := pkg.GetImport(prgrm, identGid); err == nil {
@@ -110,12 +117,8 @@ func DeclareImport(prgrm *ast.CXProgram, impName string, currentFile ast.SourceF
 		pkg.AddImport(prgrm, newImp)
 
 		prgrm.CurrentPackage = ast.CXPackageIndex(pkg.Index)
-
-		if ident == "aff" {
-			AffordanceStructs(prgrm, newImp, currentFile, lineNo)
-		}
 	} else {
 		// This should never happen.
-		panic(fmt.Sprintf("error: %s:%d: unkown error when trying to read package '%s'", prgrm.CXProgramSourceFileText(currentFile), lineNo, ident))
+		panic(fmt.Sprintf("error: %s:%d: unknown error when trying to read package '%s'", prgrm.CXProgramSourceFileText(currentFile), lineNo, ident))
 	}
 }

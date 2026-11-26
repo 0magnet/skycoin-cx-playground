@@ -2,6 +2,7 @@ package ast
 
 import (
 	"runtime/debug"
+	"strconv"
 
 	"github.com/skycoin/skycoin-cx/t0-types"
 	"github.com/skycoin/skycoin-cx/t1-constants"
@@ -41,10 +42,33 @@ func ErrorString(code int) string {
 	return constants.ErrorStrings[types.CX_RUNTIME_ERROR]
 }
 
+// RuntimeOutOfMemory is the panic value of an allocation of
+// RuntimeOutOfMemoryRequest bytes that does not fit the heap cap. Its
+// message is what the runtime error prints.
+type RuntimeOutOfMemory struct {
+	RuntimeOutOfMemoryRequest uint64
+	// RuntimeOutOfMemoryTaken is the heap pointer, garbage included, as the
+	// collector runs only between two steps.
+	RuntimeOutOfMemoryTaken types.Pointer
+	RuntimeOutOfMemoryCap   types.Pointer
+}
+
+func (outOfMemory RuntimeOutOfMemory) Error() string {
+	return "out of memory: " + strconv.FormatUint(outOfMemory.RuntimeOutOfMemoryRequest, 10) + " bytes requested with " +
+		strconv.FormatUint(uint64(outOfMemory.RuntimeOutOfMemoryTaken), 10) + " taken do not fit the heap cap of " +
+		strconv.FormatUint(uint64(outOfMemory.RuntimeOutOfMemoryCap), 10) + " bytes, raise it with -heap-max"
+}
+
 func errorCode(r interface{}) int {
 	switch v := r.(type) {
 	case int:
 		return int(v)
+	case RuntimeOutOfMemory:
+		return types.CX_RUNTIME_HEAP_EXHAUSTED_ERROR
+	case RuntimeLibraryDisabled:
+		return types.CX_RUNTIME_LIBRARY_DISABLED
+	case RuntimeOpcodeUnlinked:
+		return types.CX_RUNTIME_NOT_IMPLEMENTED
 	default:
 		return types.CX_RUNTIME_ERROR
 	}
@@ -79,17 +103,10 @@ func RuntimeError(prgrm *CXProgram) {
 	if r := recover(); r != nil {
 		switch r {
 		case constants.STACK_OVERFLOW_ERROR:
-			call := prgrm.CallStack[prgrm.CallCounter]
-			if prgrm.CallCounter > 0 {
-				prgrm.CallCounter--
-				prgrm.Stack.Pointer = call.FramePointer
-				runtimeErrorRecordSet(prgrm, r, true, types.CX_RUNTIME_STACK_OVERFLOW_ERROR)
-			} else {
-				// error at entry point
-				runtimeErrorRecordSet(prgrm, r, false, types.CX_RUNTIME_STACK_OVERFLOW_ERROR)
-			}
-		case constants.HEAP_EXHAUSTED_ERROR:
-			runtimeErrorRecordSet(prgrm, r, true, types.CX_RUNTIME_HEAP_EXHAUSTED_ERROR)
+			// callPush never pushes a frame that does not fit, so the caller is
+			// the current call. Only the entry frame leaves the pointer past the stack.
+			stackPrint := prgrm.Stack.Pointer <= constants.STACK_SIZE
+			runtimeErrorRecordSet(prgrm, r, stackPrint, types.CX_RUNTIME_STACK_OVERFLOW_ERROR)
 		default:
 			runtimeErrorRecordSet(prgrm, r, true, types.CX_RUNTIME_ERROR)
 		}

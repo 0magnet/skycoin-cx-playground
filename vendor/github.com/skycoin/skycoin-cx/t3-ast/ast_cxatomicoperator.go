@@ -5,15 +5,26 @@ import stringpool "github.com/skycoin/skycoin-cx/t2-cx-core-stringpool"
 // ----------------------------------------------------------------
 //                             `CXAtomicOperator` Getters
 
+// GetOperatorName returns the name of the operator of op, for compile
+// diagnostics. The stack dump reads GetOperatorNameBytes.
 func (op *CXAtomicOperator) GetOperatorName(prgrm *CXProgram) string {
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0089.
-	opOperator := prgrm.GetFunctionFromArray(op.Operator)
+	opOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(op.Operator)
 	if opOperator.IsBuiltIn() {
-		return OpNames[opOperator.AtomicOPCode]
+		return opOperator.BuiltInName()
 	}
 	return prgrm.CXProgramNameText(opOperator.Name)
 
+}
+
+// GetOperatorNameBytes returns the bytes of GetOperatorName, viewed from the
+// string pool or the built-in name tables (#412). The caller must not write
+// to them.
+func (op *CXAtomicOperator) GetOperatorNameBytes(prgrm *CXProgram) []byte {
+	opOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(op.Operator)
+	if opOperator.IsBuiltIn() {
+		return opOperator.BuiltInNameBytes()
+	}
+	return prgrm.CXProgramNameBytes(opOperator.Name)
 }
 
 // ----------------------------------------------------------------

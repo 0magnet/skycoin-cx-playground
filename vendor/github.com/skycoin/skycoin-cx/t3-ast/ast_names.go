@@ -29,6 +29,7 @@ func (prgrm *CXProgram) CXProgramNameBytes(gid stringpool.StringGid) []byte {
 
 // CXProgramNameText returns a name as a Go string that views the pool, for
 // boundary code that still takes strings. It does not allocate.
+// VIOLATION STRHOT-284: B, name text for compiler code run by an opcode, #412.
 func (prgrm *CXProgram) CXProgramNameText(gid stringpool.StringGid) string {
 	return prgrm.CxIrState.StringPool.StringPoolText(gid)
 }
@@ -53,6 +54,13 @@ func (prgrm *CXProgram) CXProgramSourceFileIntern(path string) SourceFileGid {
 
 // CXProgramSourceFileText returns the path of a source file as a Go string
 // that views the pool, for diagnostics, printing and the serializer.
+// VIOLATION STRHOT-285: E, error or assert text, built on a failure branch only, #412.
 func (prgrm *CXProgram) CXProgramSourceFileText(gid SourceFileGid) string {
 	return prgrm.CxIrState.StringPool.StringPoolText(prgrm.CxIrState.SourceFileMng.SourceFilePath(gid))
+}
+
+// CXProgramSourceFileBytes returns the path of a source file viewed from the
+// string pool, for printing. The caller must not write to it.
+func (prgrm *CXProgram) CXProgramSourceFileBytes(gid SourceFileGid) []byte {
+	return prgrm.CxIrState.StringPool.StringPoolBytes(prgrm.CxIrState.SourceFileMng.SourceFilePath(gid))
 }

@@ -1,7 +1,6 @@
 %{
 	package parsingcompletor
 	import (
-		"strconv"
 		"github.com/skycoin/skycoin/src/cipher/encoder"
 		"github.com/skycoin/skycoin-cx/t3-ast"
 		"github.com/skycoin/skycoin-cx/t1-constants"
@@ -78,10 +77,14 @@ build-parser: ## Generate lexer and parser for CX grammar
 	// The elements of an array or slice literal, elided ones not built yet.
 	literalElements []actions.LiteralElement
 
-    // OBJMODEL: CXFunctionGid, the parser value stack lives across Allocs, phase 4 #351.
-    // Now a pointer at rest, site S1473.
-    function *ast.CXFunction
-    functionIndex ast.CXFunctionIndex
+    functionIndex ast.CXFunctionGid
+
+    // The names of a global statement, see #486.
+    scopeGlobalNames []actions.ScopeGlobalName
+
+    // The clauses of an aff literal, see #500.
+    affordanceClause actions.AffordanceClauseParsed
+    affordanceClauses []actions.AffordanceClauseParsed
 }
 
 %token  <bool>          BOOLEAN_LITERAL
@@ -96,12 +99,12 @@ build-parser: ## Generate lexer and parser for CX grammar
 %token  <f32>           FLOAT_LITERAL
 %token  <f64>           DOUBLE_LITERAL
 %token  <tok>           FUNC OP LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK IDENTIFIER
-                        VAR COMMA PERIOD COMMENT STRING_LITERAL PACKAGE IF ELSE FOR TYPSTRUCT STRUCT
+                        VAR GLOBAL COMMA PERIOD COMMENT STRING_LITERAL PACKAGE IF ELSE FOR TYPSTRUCT STRUCT
                         SEMICOLON NEWLINE
                         ASSIGN CASSIGN IMPORT RETURN GOTO GT_OP LT_OP GTEQ_OP LTEQ_OP EQUAL COLON NEW
                         EQUALWORD GTHANWORD LTHANWORD
                         GTHANEQ LTHANEQ UNEQUAL AND OR
-                        ADD_OP SUB_OP MUL_OP DIV_OP MOD_OP REF_OP NEG_OP AFFVAR
+                        ADD_OP SUB_OP MUL_OP DIV_OP MOD_OP REF_OP NEG_OP
                         PLUSPLUS MINUSMINUS REMAINDER LEFTSHIFT RIGHTSHIFT EXP
                         NOT
                         BITXOR_OP BITOR_OP BITCLEAR_OP
@@ -129,13 +132,12 @@ build-parser: ## Generate lexer and parser for CX grammar
                         /* Debugging */
                         DSTACK DPROGRAM DSTATE
                         /* Affordances */
-                        AFF CAFF TAG INFER VALUE
+                        AFF TAG INFER VALUE
                         /* Pointers */
                         ADDR
 
                         yyDefault
 
-%type   <i32>           int_value
 
 %type   <tok>           after_period
 %type   <tok>           unary_operator
@@ -157,7 +159,6 @@ build-parser: ## Generate lexer and parser for CX grammar
 %type   <arguments>     id_list
 %type   <arguments>     types_list
 
-/* %type   <stringA>       package_identifier */
                                 
 %type   <expressions>   assignment_expression
 %type   <expressions>   constant_expression
@@ -180,8 +181,11 @@ build-parser: ## Generate lexer and parser for CX grammar
 %type   <expressions>   array_literal_expression
 
 %type   <literalElements> literal_element_list
+%type   <bool>          list_end
 %type   <literalElements> literal_element
 %type   <expressions>   slice_literal_expression
+%type   <expressions>   compound_literal_expression
+%type   <argument>      compound_literal_type
 
 %type	<ReturnExpressions>	return_expression
 
@@ -220,13 +224,14 @@ build-parser: ## Generate lexer and parser for CX grammar
 %type   <expressions>   statement
 
 %type   <functionIndex>      function_header
+%type   <scopeGlobalNames>   global_names global_name
 
-%type   <string>        infer_action_arg
-%type   <stringA>       infer_action, infer_actions
-%type   <expressions>   infer_clauses
+%type   <affordanceClause>    affordance_clause
+%type   <affordanceClauses>   affordance_clauses
 
 %type   <ints>          indexing_literal
 %type   <ints>          indexing_slice_literal
+%type   <tok>           import_names
                         
                         
 /* %start                  translation_unit */
@@ -346,6 +351,16 @@ import_declaration:
                 {
 			// DeclareImport($2)
                 }
+        // The imports into scope of #487, which pass one declares.
+        |       IMPORT PERIOD STRING_LITERAL SEMICOLON
+        |       IMPORT IDENTIFIER PERIOD STRING_LITERAL SEMICOLON
+        |       IMPORT LPAREN import_names RPAREN STRING_LITERAL SEMICOLON
+        |       IMPORT IDENTIFIER LPAREN import_names RPAREN STRING_LITERAL SEMICOLON
+        ;
+
+import_names:
+                IDENTIFIER
+        |       import_names COMMA IDENTIFIER
         ;
 
 function_header:
@@ -353,10 +368,13 @@ function_header:
                 {
 			// yylval.line = 0
 			$$ = actions.FunctionHeader(actions.AST,$2, nil, false, $<line>2, $<column>2)
+			actions.ScopeGlobalsBegin($$)
                 }
         |       FUNC LPAREN parameter_type_list RPAREN IDENTIFIER
                 {
 			$$ = actions.FunctionHeader(actions.AST,$5, $3, true, $<line>5, $<column>5)
+			actions.ScopeGlobalsBegin($$)
+			actions.ImportScopedLocalsDeclare(actions.AST, $3)
                 }
         ;
 
@@ -364,7 +382,7 @@ function_parameters:
                 LPAREN RPAREN
                 { $$ = nil }
         |       LPAREN parameter_type_list RPAREN
-                { $$ = $2 }
+                { $$ = $2; actions.ImportScopedLocalsDeclare(actions.AST, $2) }
                 ;
 
 // A result list holds names and types, (r i32, s str), or only types,
@@ -372,6 +390,10 @@ function_parameters:
 function_results:
                 function_parameters
         |       LPAREN result_type_list RPAREN
+                {
+			$$ = actions.FunctionResultsUnnamed(actions.AST, $2)
+                }
+        |       LPAREN result_type_list COMMA RPAREN
                 {
 			$$ = actions.FunctionResultsUnnamed(actions.AST, $2)
                 }
@@ -403,8 +425,10 @@ function_declaration:
                 }
         ;
 
+// Parameters, arguments and results may end in a comma too.
 parameter_type_list:
 		parameter_list
+	|	parameter_list COMMA
                 ;
 
 parameter_list:
@@ -425,6 +449,10 @@ parameter_declaration:
                 {
 			$2.Name = $1.Name
 			$2.Package = $1.Package
+			// The errors of a parameter point at its name, see #486.
+			nameDetails := actions.AST.CxIrState.CXArgumentDebugMng.CXArgumentDebugGet($1.ArgDetails)
+			typeDetails := actions.AST.CxIrState.CXArgumentDebugMng.CXArgumentDebugGet($2.ArgDetails)
+			typeDetails.FileName, typeDetails.FileLine, typeDetails.FileColumn = nameDetails.FileName, nameDetails.FileLine, nameDetails.FileColumn
 			actions.AST.ReleaseCXArgBuilder($1)
 
 			$$ = $2
@@ -441,6 +469,7 @@ direct_declarator:
 				_, arg := ast.MakeArgument(actions.AST, stringpool.StringGidNil, actions.CurrentFile, actions.LineNo)
 				arg.SetType(types.UNDEFINED)
 				arg.Name = actions.AST.CXProgramNameIntern($1)
+				actions.AST.CxIrState.CXArgumentDebugMng.CXArgumentDebugGet(arg.ArgDetails).FileColumn = $<column>1
 				arg.Package = ast.CXPackageIndex(pkg.Index)
 				$$ = arg
 			} else {
@@ -561,7 +590,7 @@ array_element:
                 {
 			$$ = actions.DeclarationSpecifiersStruct(actions.AST,$3, types.Code($1).Name(), true, actions.CurrentFile, $<line>1, $<column>1)
                 }
-        |       MUL_OP array_element
+        |       MUL_OP declaration_specifiers
                 {
 			$$ = actions.DeclarationSpecifiers($2, []types.Pointer{0}, constants.DECL_POINTER)
                 }
@@ -622,18 +651,28 @@ literal_element_list:
                 }
                 ;
 
+// A list of elements or fields may end in a comma, which Go requires when the
+// closing brace is on the next line (https://go.dev/ref/spec#Semicolons).
+list_end:
+                RBRACE
+                { $$ = false }
+        |       COMMA RBRACE
+                { $$ = true }
+                ;
+
 // An elided element, {1, 2} or {x: 1}, takes the element type of its literal.
 literal_element:
                 assignment_expression
                 {
 			$$ = []actions.LiteralElement{{Expressions: $1, Line: $<line>1, Column: $<column>1}}
                 }
-        |       LBRACE literal_element_list RBRACE
+        |       LBRACE literal_element_list list_end
                 {
 			$$ = []actions.LiteralElement{{Elements: $2, Elided: true, Line: actions.LineNo}}
                 }
-        |       LBRACE struct_literal_fields RBRACE
+        |       LBRACE struct_literal_fields list_end
                 {
+			ParserActionStructLiteralComma($2, $3)
 			$$ = []actions.LiteralElement{{Fields: $2, Elided: true, Keyed: true, Line: actions.LineNo}}
                 }
                 ;
@@ -662,7 +701,7 @@ indexing_slice_literal:
 
 // expressions
 array_literal_expression:
-                indexing_literal IDENTIFIER LBRACE literal_element_list RBRACE
+                indexing_literal IDENTIFIER LBRACE literal_element_list list_end
                 {
 			lengths := types.Cast_sint_to_sptr($1)
 			elements := actions.LiteralElementsFlatten(actions.AST, actions.LiteralType{Lengths: lengths, StructName: $2, Line: $<line>1, Column: $<column>1}, $4)
@@ -672,7 +711,7 @@ array_literal_expression:
                 {
 			$$ = actions.ArrayLiteralStructExpression(actions.AST, types.Cast_sint_to_sptr($1), $2, $<line>1, $<column>1, nil)
                 }
-        |       indexing_literal type_specifier LBRACE literal_element_list RBRACE
+        |       indexing_literal type_specifier LBRACE literal_element_list list_end
                 {
 			lengths := types.Cast_sint_to_sptr($1)
 			elements := actions.LiteralElementsFlatten(actions.AST, actions.LiteralType{Lengths: lengths, TypeCode: types.Code($2)}, $4)
@@ -685,7 +724,7 @@ array_literal_expression:
                 ;
 
 slice_literal_expression:
-                indexing_slice_literal IDENTIFIER LBRACE literal_element_list RBRACE
+                indexing_slice_literal IDENTIFIER LBRACE literal_element_list list_end
                 {
 			typ := actions.LiteralType{Lengths: types.Cast_sint_to_sptr($1), Slice: true, StructName: $2, Line: $<line>1, Column: $<column>1}
 			$$ = actions.LiteralSlice(actions.AST, typ, actions.LiteralElementsFlatten(actions.AST, typ, $4))
@@ -694,7 +733,7 @@ slice_literal_expression:
                 {
 			$$ = actions.LiteralSlice(actions.AST, actions.LiteralType{Lengths: types.Cast_sint_to_sptr($1), Slice: true, StructName: $2, Line: $<line>1, Column: $<column>1}, nil)
                 }
-        |       indexing_slice_literal type_specifier LBRACE literal_element_list RBRACE
+        |       indexing_slice_literal type_specifier LBRACE literal_element_list list_end
                 {
 			typ := actions.LiteralType{Lengths: types.Cast_sint_to_sptr($1), Slice: true, TypeCode: types.Code($2)}
 			$$ = actions.LiteralSlice(actions.AST, typ, actions.LiteralElementsFlatten(actions.AST, typ, $4))
@@ -704,83 +743,62 @@ slice_literal_expression:
 			$$ = actions.LiteralSlice(actions.AST, actions.LiteralType{Lengths: types.Cast_sint_to_sptr($1), Slice: true, TypeCode: types.Code($2)}, nil)
                 }
                 ;
-infer_action_arg:
-                IDENTIFIER
-                {
-			$$ = $1
-                }
-        |       int_value
-                {
-			$$ = strconv.Itoa(int($1))
-                }
-	|	type_specifier PERIOD IDENTIFIER
-		{
-			$$ = types.Code($1).Name() + "." + $3
-		}
-        ;
 
-infer_action:
-                IDENTIFIER LPAREN infer_action_arg COMMA IDENTIFIER RPAREN
-		{
-			res := append([]string{$3}, $5)
-			res = append(res, $1)
-			$$ = res
-		}
-	|	IDENTIFIER LPAREN infer_action_arg RPAREN
-		{
-			$$ = append([]string{$1}, $3)
-		}
-	|	IDENTIFIER LPAREN infer_action RPAREN
-		{
-			$$ = append($3, $1)
-		}
-	|	IDENTIFIER LPAREN infer_action COMMA infer_action RPAREN
-		{
-			res := append($3, $5...)
-			$$ = append(res, $1)
-		}
-        ;
-
-infer_actions:
-                infer_action SEMICOLON
+// A literal of a type with a pointer or with both array and slice
+// dimensions, such as []*T or [2][]i32.
+compound_literal_type:
+                indexing_literal MUL_OP declaration_specifiers
                 {
-			$$ = $1
+			$$ = actions.DeclarationSpecifiers(actions.DeclarationSpecifiers($3, []types.Pointer{0}, constants.DECL_POINTER), types.Cast_sint_to_sptr($1), constants.DECL_ARRAY)
                 }
-        |       infer_actions infer_action SEMICOLON
+        |       indexing_literal LBRACK RBRACK declaration_specifiers
                 {
-			$1 = append($1, $2...)
-			$$ = $1
+			$$ = actions.DeclarationSpecifiers(actions.DeclarationSpecifiers($4, []types.Pointer{0}, constants.DECL_SLICE), types.Cast_sint_to_sptr($1), constants.DECL_ARRAY)
                 }
-                ;
-        ;
-
-infer_clauses:
+        |       indexing_slice_literal MUL_OP declaration_specifiers
                 {
-			$$ = actions.SliceLiteralExpression(actions.AST,types.AFF, nil)
+			$$ = actions.LiteralTypeSlices(actions.DeclarationSpecifiers($3, []types.Pointer{0}, constants.DECL_POINTER), len($1))
                 }
-        |       infer_actions
+        |       indexing_slice_literal indexing_literal array_element
                 {
-			var exprs []ast.CXExpression
-			for _, str := range $1 {
-				expr := actions.WritePrimaryExprs(actions.AST,types.AFF, encoder.Serialize(str), false)
-				expr[len(expr) - 1].ExpressionType = ast.CXEXPR_ARRAY_LITERAL
-				exprs = append(exprs, expr...)
-			}
-			
-			$$ = actions.SliceLiteralExpression(actions.AST,types.AFF, exprs)
+			$$ = actions.LiteralTypeSlices(actions.DeclarationSpecifiers($3, types.Cast_sint_to_sptr($2), constants.DECL_ARRAY), len($1))
                 }
                 ;
 
+compound_literal_expression:
+                compound_literal_type LBRACE literal_element_list list_end
+                {
+			$$ = actions.LiteralCompound(actions.AST, $1, $<line>1, $<column>1, $3)
+                }
+        |       compound_literal_type LBRACE RBRACE
+                {
+			$$ = actions.LiteralCompound(actions.AST, $1, $<line>1, $<column>1, nil)
+                }
+                ;
+affordance_clause:
+                IDENTIFIER LPAREN IDENTIFIER RPAREN
+                {
+			$$ = actions.AffordanceClauseParsed{AffordanceClauseParsedName: $1, AffordanceClauseParsedArgument: $3, AffordanceClauseParsedLine: $<line>1, AffordanceClauseParsedColumn: $<column>1}
+                }
+        |       VAR LPAREN IDENTIFIER RPAREN
+                {
+			$$ = actions.AffordanceClauseParsed{AffordanceClauseParsedName: "var", AffordanceClauseParsedArgument: $3, AffordanceClauseParsedLine: $<line>1, AffordanceClauseParsedColumn: $<column>1}
+                }
+        ;
 
-int_value:
-            INT_LITERAL
-            {
-		    $$ = $1
-            }
-        |   SUB_OP INT_LITERAL
-            {
-		    $$ = -$2
-            }
+affordance_clauses:
+                {
+			$$ = nil
+                }
+        |       affordance_clauses affordance_clause
+                {
+			$$ = append($1, $2)
+                }
+        |       affordance_clauses SEMICOLON
+                {
+			$$ = $1
+                }
+        ;
 
 primary_expression:
                 IDENTIFIER
@@ -793,9 +811,9 @@ primary_expression:
 		{
 			$$ = nil
 		}
-        |       INFER LBRACE infer_clauses RBRACE
+        |       INFER LBRACE affordance_clauses RBRACE
                 {
-			$$ = $3
+			$$ = actions.AffordanceLiteral(actions.AST, $3, $<line>1)
                 }
         |       STRING_LITERAL
                 {
@@ -880,6 +898,7 @@ primary_expression:
                 {
 			$$ = $1
                 }
+        |       compound_literal_expression
                 ;
 
 after_period:   type_specifier
@@ -919,6 +938,12 @@ postfix_expression:
 			$$ = actions.PostfixExpressionFunCall(actions.AST,$1, $3)
 			actions.TokenPositionPop(position)
                 }
+	|       postfix_expression LPAREN argument_expression_list COMMA RPAREN
+                {
+			position := actions.TokenPositionPush($<line>1, $<column>1)
+			$$ = actions.PostfixExpressionFunCall(actions.AST,$1, $3)
+			actions.TokenPositionPop(position)
+                }
         |       postfix_expression PERIOD IDENTIFIER
                 {
 			position := actions.TokenPositionPush($<line>3, $<column>3)
@@ -928,12 +953,14 @@ postfix_expression:
                 ;
 
 struct_literal_value:
-		IDENTIFIER LBRACE struct_literal_fields RBRACE
+		IDENTIFIER LBRACE struct_literal_fields list_end
                 {
+			ParserActionStructLiteralComma($3, $4)
 			$$ = actions.PrimaryStructLiteral(actions.AST, $1, $<line>1, $<column>1, $3)
                 }
-        |       postfix_expression PERIOD IDENTIFIER LBRACE struct_literal_fields RBRACE
+        |       postfix_expression PERIOD IDENTIFIER LBRACE struct_literal_fields list_end
                 {
+			ParserActionStructLiteralComma($5, $6)
 			$$ = actions.PrimaryStructLiteralExternalOf(actions.AST, $1, $3, $<line>3, $<column>3, $5)
                 }
                 ;
@@ -1095,6 +1122,12 @@ postfix_nc:
 			actions.TokenPositionPop(position)
                 }
 	|       postfix_nc LPAREN argument_expression_list RPAREN
+                {
+			position := actions.TokenPositionPush($<line>1, $<column>1)
+			$$ = actions.PostfixExpressionFunCall(actions.AST,$1, $3)
+			actions.TokenPositionPop(position)
+                }
+	|       postfix_nc LPAREN argument_expression_list COMMA RPAREN
                 {
 			position := actions.TokenPositionPush($<line>1, $<column>1)
 			$$ = actions.PostfixExpressionFunCall(actions.AST,$1, $3)
@@ -1397,7 +1430,41 @@ block_item_list:
 block_item:
                 { $$ = nil }
         |       declaration
+                {
+			actions.ScopeGlobalsStatementSeen()
+			$$ = $1
+                }
         |       statement
+                {
+			actions.ScopeGlobalsStatementSeen()
+			$$ = $1
+                }
+        // global names the globals the function uses, as its first
+        // statements (#486). The lexer gives GLOBAL its brace depth.
+        |       GLOBAL global_names
+                {
+			actions.ScopeGlobalsDeclare(actions.AST, $2, $<i>1, $<line>1, $<column>1)
+			$$ = nil
+                }
+                ;
+
+global_names:
+                global_name
+        |       global_names COMMA global_name
+                {
+			$$ = append($1, $3...)
+                }
+                ;
+
+global_name:
+                IDENTIFIER
+                {
+			$$ = []actions.ScopeGlobalName{{Name: actions.AST.CXProgramNameIntern($1), Line: $<line>1, Column: $<column>1}}
+                }
+        |       IDENTIFIER PERIOD IDENTIFIER
+                {
+			$$ = []actions.ScopeGlobalName{{Package: actions.AST.CXProgramNameIntern($1), Name: actions.AST.CXProgramNameIntern($3), Line: $<line>1, Column: $<column>1}}
+                }
                 ;
 
 expression_statement:
@@ -1592,7 +1659,7 @@ jump_statement: GOTO IDENTIFIER
                         exprCXLine := actions.MakeCXLineExpressionCurrent(actions.AST)
                         // OBJMODEL: state.CXExpressionMng.CXExpressionAlloc(), phase 4 #346.
                         // Now a constructor call, site S1503.
-                        expr := ast.MakeAtomicOperatorExpression(actions.AST,ast.Natives[constants.OP_GOTO])
+                        expr := ast.MakeAtomicOperatorExpression(actions.AST,ast.NativeFunctionOf(actions.AST, constants.OP_GOTO))
                         expressionIdx :=expr.Index
                         actions.AST.CXAtomicOps[expressionIdx].Package = ast.CXPackageIndex(pkg.Index)
                         actions.AST.CXAtomicOps[expressionIdx].Label = actions.AST.CXProgramNameIntern($2)

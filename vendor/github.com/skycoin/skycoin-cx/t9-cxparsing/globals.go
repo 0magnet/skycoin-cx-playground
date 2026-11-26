@@ -225,7 +225,7 @@ func globalDeferredType(prgrm *ast.CXProgram, pkg *ast.CXPackage, deferred *ast.
 	errorList := &prgrm.CxIrState.CompileErrorList
 	records := len(errorList.CompileErrorListRecords)
 	foundCompileErrors := globals.FoundCompileErrors
-	functions := len(prgrm.CXFunctions)
+	functionsLive := prgrm.CXProgramFunctionLiveSlots()
 	atomicOps := len(prgrm.CXAtomicOps)
 	currentFile, lineNo, lineStr := actions.CurrentFile, actions.LineNo, actions.LineStr
 	currentPackage := prgrm.CurrentPackage
@@ -234,11 +234,13 @@ func globalDeferredType(prgrm *ast.CXProgram, pkg *ast.CXPackage, deferred *ast.
 
 	actions.CurrentFile = deferred.GlobalDeferredFile
 	prgrm.CurrentPackage = ast.CXPackageIndex(pkg.Index)
-	fn := ast.MakeFunction(prgrm, functionName, deferred.GlobalDeferredFile, 0)
+	_, fn := ast.MakeFunction(prgrm, functionName, deferred.GlobalDeferredFile, 0)
 	_, fnIdx := pkg.AddFunction(prgrm, fn)
+	actions.ScopeGlobalsInitializer = true
 	Passtwo(bytes.NewBufferString(globalDeferredSource(prgrm, pkg, deferred, text, functionName, valueName)))
+	actions.ScopeGlobalsInitializer = false
 
-	spec := globalValueSpec(prgrm, prgrm.GetFunctionFromArray(fnIdx), valueName)
+	spec := globalValueSpec(prgrm, prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx), valueName)
 	// An error of the declaration made for the value leaves the spec unusable.
 	failed := len(errorList.CompileErrorListRecords) > records
 	reported := globalDeferredErrorsKeep(prgrm, deferred, records, functionName, valueName)
@@ -247,7 +249,7 @@ func globalDeferredType(prgrm *ast.CXProgram, pkg *ast.CXPackage, deferred *ast.
 	if !reported {
 		globals.FoundCompileErrors = foundCompileErrors
 	}
-	prgrm.CXFunctions = prgrm.CXFunctions[:functions]
+	prgrm.CXProgramFunctionReleaseNew(functionsLive)
 	prgrm.CXAtomicOps = prgrm.CXAtomicOps[:atomicOps]
 	actions.CurrentFile, actions.LineNo, actions.LineStr = currentFile, lineNo, lineStr
 	prgrm.CurrentPackage = currentPackage
@@ -287,7 +289,17 @@ func globalDeferredSource(prgrm *ast.CXProgram, pkg *ast.CXPackage, deferred *as
 	for i := 2; i < line; i++ {
 		file.WriteByte('\n')
 	}
-	file.WriteString(" " + prgrm.CXProgramNameText(valueName) + " :=\n")
+	names := prgrm.CXProgramNameText(valueName)
+	if deferred.GlobalDeferredResults > 1 {
+		// var a, b = f() takes one of the results of f.
+		results := make([]string, deferred.GlobalDeferredResults)
+		for i := range results {
+			results[i] = names + "Other" + strconv.Itoa(i)
+		}
+		results[deferred.GlobalDeferredResult] = names
+		names = strings.Join(results, ", ")
+	}
+	file.WriteString(" " + names + " :=\n")
 	file.WriteString(strings.Repeat(" ", deferred.GlobalDeferredStartColumn-1))
 	file.WriteString(text)
 	file.WriteString("\n}\n")
@@ -443,13 +455,23 @@ func globalSpecPointer(spec *ast.CXArgument, pointer bool) *ast.CXArgument {
 func globalDeferredErrorsKeep(prgrm *ast.CXProgram, deferred *ast.GlobalDeferred, records int, functionName stringpool.StringGid, valueName stringpool.StringGid) bool {
 	errorList := &prgrm.CxIrState.CompileErrorList
 	kept := errorList.CompileErrorListRecords[:records]
+	countMismatch := false
 	for _, record := range errorList.CompileErrorListRecords[records:] {
+		if deferred.GlobalDeferredResults > 1 && record.CompileErrorRecordCode == ast.CompileErrorCodeAssignmentCount {
+			// The count of var a, b = f() is reported once, at a.
+			countMismatch = true
+			if deferred.GlobalDeferredResult == 0 {
+				record.CompileErrorRecordFile, record.CompileErrorRecordLine, record.CompileErrorRecordColumn = ast.CXArgumentDebugPosition(prgrm, prgrm.GetCXArg(deferred.GlobalDeferredDeclarator).ArgDetails)
+				kept = append(kept, record)
+			}
+			continue
+		}
 		if !globalsRecordNames(record, functionName, valueName) && record.CompileErrorRecordFile == deferred.GlobalDeferredFile && globalsPositionBefore(deferred.GlobalDeferredStartLine, deferred.GlobalDeferredStartColumn, record.CompileErrorRecordLine, record.CompileErrorRecordColumn) && globalsPositionBefore(record.CompileErrorRecordLine, record.CompileErrorRecordColumn, deferred.GlobalDeferredEndLine, deferred.GlobalDeferredEndColumn) {
 			kept = append(kept, record)
 		}
 	}
 	errorList.CompileErrorListRecords = kept
-	return len(kept) > records
+	return len(kept) > records || countMismatch
 }
 
 // globalsPositionBefore reports whether line and column are at or before
@@ -477,7 +499,7 @@ func globalsInitializersOrder(prgrm *ast.CXProgram) {
 	prgrm.CxIrState.CxIrStateGlobalInitializers = nil
 	ordered := make([]ast.CXExpression, 0, len(prgrm.SysInitExprs))
 	next := 0
-	functions := map[ast.CXFunctionIndex][]globalsInitializerReference{}
+	functions := map[ast.CXFunctionGid][]globalsInitializerReference{}
 	for start := 0; start < len(initializers); {
 		end := start + 1
 		for end < len(initializers) && initializers[end].GlobalInitializerPackage == initializers[start].GlobalInitializerPackage {
@@ -496,10 +518,13 @@ func globalsInitializersOrder(prgrm *ast.CXProgram) {
 
 // globalsInitializersRunOrder returns the order of the initializers of run,
 // all of one package.
-func globalsInitializersRunOrder(prgrm *ast.CXProgram, run []ast.GlobalInitializer, functions map[ast.CXFunctionIndex][]globalsInitializerReference) []int {
+func globalsInitializersRunOrder(prgrm *ast.CXProgram, run []ast.GlobalInitializer, functions map[ast.CXFunctionGid][]globalsInitializerReference) []int {
 	byName := make(map[stringpool.StringGid]int, len(run))
 	for i, initializer := range run {
 		byName[initializer.GlobalInitializerName] = i
+		for _, other := range initializer.GlobalInitializerOthers {
+			byName[other] = i
+		}
 	}
 	pkg, err := prgrm.GetPackageFromArray(run[0].GlobalInitializerPackage)
 	if err != nil {
@@ -624,7 +649,7 @@ func globalsArgDetails(prgrm *ast.CXProgram, glbl *ast.CXTypeSignature) ast.CXAr
 // globalsInitializerReferences returns the globals of pkg that the
 // expressions of an initializer, which are not compiled yet, refer to by
 // name, and those that the functions they call refer to.
-func globalsInitializerReferences(prgrm *ast.CXProgram, pkg *ast.CXPackage, exprs []ast.CXExpression, functions map[ast.CXFunctionIndex][]globalsInitializerReference) []globalsInitializerReference {
+func globalsInitializerReferences(prgrm *ast.CXProgram, pkg *ast.CXPackage, exprs []ast.CXExpression, functions map[ast.CXFunctionGid][]globalsInitializerReference) []globalsInitializerReference {
 	var references []globalsInitializerReference
 	for _, expr := range exprs {
 		if expr.Type == ast.CX_LINE {
@@ -639,15 +664,60 @@ func globalsInitializerReferences(prgrm *ast.CXProgram, pkg *ast.CXPackage, expr
 			})
 		}
 		references = append(references, globalsFunctionReferences(prgrm, op.Operator, functions)...)
+		if expr.IsMethodCall() {
+			references = append(references, globalsFunctionReferences(prgrm, globalsMethodCalled(prgrm, pkg, op), functions)...)
+		}
 	}
 	return references
+}
+
+// globalsMethodCalled returns the method that op, a method call of an
+// initializer that is not compiled yet, calls on a global, as g.m() or
+// g.f.m() do, or CXFunctionGidNil when its receiver is not a global.
+func globalsMethodCalled(prgrm *ast.CXProgram, pkg *ast.CXPackage, op *ast.CXAtomicOperator) ast.CXFunctionGid {
+	inputs := op.GetInputs(prgrm)
+	if len(inputs) == 0 {
+		return ast.CXFunctionGidNil
+	}
+	sig := prgrm.GetCXTypeSignatureFromArray(inputs[0])
+	if sig.Type != ast.TYPE_CXARGUMENT_DEPRECATE {
+		return ast.CXFunctionGidNil
+	}
+	receiver := prgrm.GetCXArg(ast.CXArgumentIndex(sig.Meta))
+	glbl, err := pkg.GetGlobal(prgrm, receiver.Name)
+	if err != nil || len(receiver.Fields) == 0 {
+		return ast.CXFunctionGidNil
+	}
+	strct := glbl.GetStructType(prgrm)
+	for _, fieldIdx := range receiver.Fields[:len(receiver.Fields)-1] {
+		if strct == nil {
+			return ast.CXFunctionGidNil
+		}
+		field, err := strct.GetField(prgrm, prgrm.GetCXArg(fieldIdx).Name)
+		if err != nil {
+			return ast.CXFunctionGidNil
+		}
+		strct = field.GetStructType(prgrm)
+	}
+	if strct == nil {
+		return ast.CXFunctionGidNil
+	}
+	strctPkg, err := prgrm.GetPackageFromArray(strct.Package)
+	if err != nil {
+		return ast.CXFunctionGidNil
+	}
+	method, err := strctPkg.GetMethod(prgrm, strct.Name, prgrm.GetCXArg(receiver.Fields[len(receiver.Fields)-1]).Name)
+	if err != nil {
+		return ast.CXFunctionGidNil
+	}
+	return method
 }
 
 // globalsFunctionReferences returns the globals of its package that the
 // compiled function fnIdx refers to, directly or through the functions it
 // calls, each through fnIdx.
-func globalsFunctionReferences(prgrm *ast.CXProgram, fnIdx ast.CXFunctionIndex, functions map[ast.CXFunctionIndex][]globalsInitializerReference) []globalsInitializerReference {
-	fn := prgrm.GetFunctionFromArray(fnIdx)
+func globalsFunctionReferences(prgrm *ast.CXProgram, fnIdx ast.CXFunctionGid, functions map[ast.CXFunctionGid][]globalsInitializerReference) []globalsInitializerReference {
+	fn := prgrm.CxIrState.CxIrStateFunctionGetOrNil(fnIdx)
 	if fn == nil || fn.IsBuiltIn() {
 		return nil
 	}

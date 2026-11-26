@@ -4,6 +4,7 @@ import (
 	"github.com/skycoin/skycoin-cx/t0-types"
 	"github.com/skycoin/skycoin-cx/t1-constants"
 	objmodel "github.com/skycoin/skycoin-cx/t1-cx-core-objmodel"
+	stringpool "github.com/skycoin/skycoin-cx/t2-cx-core-stringpool"
 	"github.com/skycoin/skycoin-cx/t3-ast"
 )
 
@@ -12,9 +13,7 @@ func processGlobalInitializer(prgrm *ast.CXProgram, initializer []ast.CXExpressi
 	glbl := prgrm.GetCXTypeSignatureFromArray(glblIdx)
 	defer prgrm.CXProgramGlobalInitializerAdd(prgrm.CurrentPackage, glbl.Name, start)
 	initializerExpressionIdx := initializer[len(initializer)-1].Index
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1209.
-	initializerExpressionOperator := prgrm.GetFunctionFromArray(prgrm.CXAtomicOps[initializerExpressionIdx].Operator)
+	initializerExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(prgrm.CXAtomicOps[initializerExpressionIdx].Operator)
 	// then we just re-assign offsets
 	if initializerExpressionOperator == nil {
 		// then it's a literal
@@ -23,9 +22,7 @@ func processGlobalInitializer(prgrm *ast.CXProgram, initializer []ast.CXExpressi
 		prgrm.CXAtomicOps[initializerExpressionIdx].Outputs = nil
 
 		prgrm.CXAtomicOps[initializerExpressionIdx].AddOutput(prgrm, glblIdx)
-		// OBJMODEL: state.CXFunctionMng.CXFunctionAlloc(), phase 4 #351.
-		// Now an arena insert, site S1210.
-		opIdx := prgrm.AddNativeFunctionInArray(ast.Natives[constants.OP_IDENTITY])
+		opIdx := prgrm.AddNativeFunctionInArray(ast.NativeFunctionOf(prgrm, constants.OP_IDENTITY))
 		prgrm.CXAtomicOps[initializerExpressionIdx].Operator = opIdx
 
 		//add intialization statements, to array
@@ -39,7 +36,7 @@ func processGlobalInitializer(prgrm *ast.CXProgram, initializer []ast.CXExpressi
 			outputStruct.AddField_TypeSignature(prgrm, glblIdx)
 			// OBJMODEL: state.CXAtomicOperatorMng.CXAtomicOperatorAlloc(), phase 4 #341.
 			// Now a heap literal, site S1212 S1213.
-			index := prgrm.AddCXAtomicOp(&ast.CXAtomicOperator{Outputs: outputStruct, Operator: -1, Function: -1})
+			index := prgrm.AddCXAtomicOp(&ast.CXAtomicOperator{Outputs: outputStruct})
 			initializer = StructLiteralAssignment(prgrm,
 				// OBJMODEL: state.CXExpressionMng (manager storage) or []CXExpressionGid, phase 4 #346.
 				// Now a slice of objects, site S1214.
@@ -121,7 +118,7 @@ func DeclareGlobalInPackage(prgrm *ast.CXProgram, pkg *ast.CXPackage,
 					make([]byte, types.POINTER_SIZE), true)
 			} else {
 				glblArg = WritePrimary(prgrm, declaration_specifiers.Type,
-					make([]byte, totalSize), declaration_specifiers.ArraySliceDimensions() > 0)
+					make([]byte, totalSize), true)
 			}
 			glblArgOffset = glblArg.Offset
 			glblArgPassBy = glblArg.PassBy
@@ -273,7 +270,7 @@ func DeclareGlobalInPackage(prgrm *ast.CXProgram, pkg *ast.CXPackage,
 		if declaration_specifiers.IsSlice() { // TODO:PTR move branch in WritePrimary
 			glblArg = WritePrimary(prgrm, declaration_specifiers.Type, make([]byte, types.POINTER_SIZE), true)
 		} else {
-			glblArg = WritePrimary(prgrm, declaration_specifiers.Type, make([]byte, totalSize), declaration_specifiers.ArraySliceDimensions() > 0)
+			glblArg = WritePrimary(prgrm, declaration_specifiers.Type, make([]byte, totalSize), true)
 		}
 
 		declaration_specifiers.Name = declarator.Name
@@ -310,9 +307,7 @@ func processLocalInitialization(prgrm *ast.CXProgram, pkg *ast.CXPackage, initia
 		panic(err)
 	}
 
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S1229.
-	initializerExpressionOperator := prgrm.GetFunctionFromArray(initializerExpression.Operator)
+	initializerExpressionOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(initializerExpression.Operator)
 	if initializerExpressionOperator == nil {
 		// THEN it's a literal, e.g. var foo i32 = 10;
 
@@ -324,7 +319,7 @@ func processLocalInitialization(prgrm *ast.CXProgram, pkg *ast.CXPackage, initia
 		// with the declared variable
 		// OBJMODEL: state.CXExpressionMng.CXExpressionAlloc(), phase 4 #346.
 		// Now a constructor call, site S1231.
-		expr := ast.MakeAtomicOperatorExpression(prgrm, ast.Natives[constants.OP_IDENTITY])
+		expr := ast.MakeAtomicOperatorExpression(prgrm, ast.NativeFunctionOf(prgrm, constants.OP_IDENTITY))
 		cxExprAtomicOpIdx := expr.Index
 		prgrm.CXAtomicOps[cxExprAtomicOpIdx].Package = ast.CXPackageIndex(pkg.Index)
 
@@ -351,7 +346,8 @@ func processLocalInitialization(prgrm *ast.CXProgram, pkg *ast.CXPackage, initia
 			initOutTypeSigIdx = ast.AllocCXTypeSignatureOfCXArg(prgrm, prgrm.GetCXArgFromArray(initOutIdx))
 		} else if initializerExpressionOutputTypeSig.Type == ast.TYPE_ATOMIC || initializerExpressionOutputTypeSig.Type == ast.TYPE_POINTER_ATOMIC {
 			initOutTypeSigIdx = initializerExpression.GetOutputs(prgrm)[0]
-		} else if initializerExpressionOutputTypeSig.Type == ast.TYPE_STRUCT {
+		} else if initializerExpressionOutputTypeSig.Type == ast.TYPE_STRUCT || initializerExpressionOutputTypeSig.Type == ast.TYPE_SLICE_ATOMIC {
+			// A slice result read whole or by index, as in var c ui8 = f()[1].
 			initOutTypeSigIdx = initializerExpression.GetOutputs(prgrm)[0]
 		} else {
 			panic("type is not known")
@@ -455,6 +451,7 @@ func DeclareLocal(prgrm *ast.CXProgram, declarator *ast.CXArgument, declarationS
 	// If `initializer` is `nil`, this means that an expression
 	// equivalent to nil was used, such as `[]i32{}`.
 	if doesInitialize && initializer != nil {
+		outputlessValueCheck(prgrm, initializer)
 		processLocalInitialization(prgrm, pkg, &initializer, localVarTypeSigIdx, declSpecIdx)
 		prgrm.ReleaseCXArgUnlessNamed(declarationSpecifiers, localVarTypeSigIdx)
 
@@ -530,6 +527,11 @@ func DeclareGlobals(prgrm *ast.CXProgram, names []*ast.CXArgument, spec *ast.CXA
 	if passOneValues != nil {
 		count = len(passOneValues)
 	}
+	// A literal is one value, which only a call of several results is not.
+	if initialized && count == 1 && len(names) > 1 && (passOneValues == nil || spec != nil || passOneValues[0].GlobalValueType == types.UNDEFINED) {
+		globalsDeclareResults(prgrm, names, spec, values, passOneValues)
+		return
+	}
 	if initialized && count != len(names) {
 		file, line, column := ast.CXArgumentDebugPosition(prgrm, names[0].ArgDetails)
 		prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeAssignmentCount, file, line, column, ast.CompileErrorOperands{int64(len(names)), int64(count)})
@@ -553,7 +555,7 @@ func DeclareGlobals(prgrm *ast.CXProgram, names []*ast.CXArgument, spec *ast.CXA
 			code := passOneValues[i].GlobalValueType
 			if code == types.UNDEFINED {
 				if !GlobalRedeclarationCheck(prgrm, name) {
-					globalDeferredAdd(prgrm, name, passOneValues[i])
+					globalDeferredAdd(prgrm, name, passOneValues[i], 0, 0)
 				}
 				continue
 			}
@@ -584,9 +586,73 @@ func DeclareGlobals(prgrm *ast.CXProgram, names []*ast.CXArgument, spec *ast.CXA
 	}
 }
 
+// globalsDeclareResults declares the globals of var a, b = f() and of var
+// a, b T = f(), each of which takes one result of f. Pass one declares them,
+// with the inference pass for a value without a type, and pass two makes the
+// call write every global, which the count of its results checks.
+func globalsDeclareResults(prgrm *ast.CXProgram, names []*ast.CXArgument, spec *ast.CXArgument, values [][]ast.CXExpression, passOneValues []GlobalValue) {
+	if passOneValues != nil {
+		for i, name := range names {
+			if GlobalRedeclarationCheck(prgrm, name) {
+				continue
+			}
+			if spec == nil {
+				globalDeferredAdd(prgrm, name, passOneValues[0], i, len(names))
+				continue
+			}
+			nameSpec := spec
+			if i < len(names)-1 {
+				nameSpec = argumentCopy(prgrm, spec)
+			}
+			DeclareGlobalInPackage(prgrm, nil, name, nameSpec, nil, false)
+		}
+		return
+	}
+	pkg, err := prgrm.GetCurrentPackage()
+	if err != nil {
+		panic(err)
+	}
+	var globalIdxs []ast.CXTypeSignatureIndex
+	var others []stringpool.StringGid
+	for i, name := range names {
+		glbl, err := pkg.GetGlobal(prgrm, name.Name)
+		if err != nil || typeSignatureInvalid(prgrm, glbl) {
+			// The global has its error, so the value reports nothing more.
+			return
+		}
+		globalIdxs = append(globalIdxs, glbl.Index)
+		if i > 0 {
+			others = append(others, name.Name)
+		}
+	}
+	value := values[0]
+	call := &prgrm.CXAtomicOps[value[len(value)-1].Index]
+	operator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(call.Operator)
+	results := 1
+	if operator != nil && len(call.GetOutputs(prgrm)) == 0 {
+		results = len(operator.GetOutputs(prgrm))
+	}
+	if results != len(names) {
+		file, line, column := ast.CXArgumentDebugPosition(prgrm, names[0].ArgDetails)
+		prgrm.CXProgramCompileErrorAddPosition(ast.CompileErrorCodeAssignmentCount, file, line, column, ast.CompileErrorOperands{int64(len(names)), int64(results)})
+		return
+	}
+	start := len(prgrm.SysInitExprs)
+	call.Outputs = nil
+	for _, glblIdx := range globalIdxs {
+		call.AddOutput(prgrm, glblIdx)
+	}
+	prgrm.SysInitExprs = append(prgrm.SysInitExprs, value...)
+	prgrm.CXProgramGlobalInitializerAdd(prgrm.CurrentPackage, names[0].Name, start, others...)
+	for _, name := range names {
+		prgrm.ReleaseCXArgBuilder(name)
+	}
+}
+
 // globalDeferredAdd records the global name of var name = value, whose value
-// is not a literal, for the inference pass of t9-cxparsing.
-func globalDeferredAdd(prgrm *ast.CXProgram, name *ast.CXArgument, value GlobalValue) {
+// is not a literal, for the inference pass of t9-cxparsing. The global of
+// var a, b = f() takes the result at result of f, which has results.
+func globalDeferredAdd(prgrm *ast.CXProgram, name *ast.CXArgument, value GlobalValue, result int, results int) {
 	pkg, err := prgrm.GetCurrentPackage()
 	if err != nil {
 		panic(err)
@@ -600,6 +666,8 @@ func globalDeferredAdd(prgrm *ast.CXProgram, name *ast.CXArgument, value GlobalV
 		GlobalDeferredStartColumn: value.GlobalValueStartColumn,
 		GlobalDeferredEndLine:     value.GlobalValueEndLine,
 		GlobalDeferredEndColumn:   value.GlobalValueEndColumn,
+		GlobalDeferredResult:      result,
+		GlobalDeferredResults:     results,
 	})
 }
 

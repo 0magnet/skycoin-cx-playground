@@ -18,6 +18,7 @@ const (
 	FileErrorCodePathOutsideSandbox    FileErrorCode = 1004
 	FileErrorCodeSandboxRootMissing    FileErrorCode = 1005
 	FileErrorCodeFileSystemCallFailure FileErrorCode = 1006
+	FileErrorCodeContentInvalid        FileErrorCode = 1007
 )
 
 const (
@@ -26,6 +27,9 @@ const (
 	FileOperationRead            FileOperationCode = 1503
 	FileOperationPathValidate    FileOperationCode = 1504
 	FileOperationSandboxRootOpen FileOperationCode = 1505
+	FileOperationWrite           FileOperationCode = 1506
+	FileOperationOpenReadWrite   FileOperationCode = 1507
+	FileOperationRemove          FileOperationCode = 1508
 )
 
 // FileError is a class A failure of a file operation, nil on success.
@@ -41,6 +45,8 @@ type FileError struct {
 const fileSystemPathEscapeMessage = "path escapes from parent"
 
 // fileErrorFromFileSystemError wraps a Go error from the os package.
+// VIOLATION STRHOT-268: B, hands a path or text to Go or the OS, #412.
+// VIOLATION VMALLOC-018: a system library call allocates in Go and the OS, #407.
 func fileErrorFromFileSystemError(operation FileOperationCode, path string, fileSystemError error) *FileError {
 	code := FileErrorCodeFileSystemCallFailure
 	var pathError *fs.PathError
@@ -58,4 +64,10 @@ func fileErrorFromFileSystemError(operation FileOperationCode, path string, file
 		FileErrorMessage:   fileSystemError.Error(),
 		FileErrorPath:      path,
 	}
+}
+
+// FileErrorWrap wraps a Go error of a file operation of another package,
+// at its module boundary.
+func FileErrorWrap(operation FileOperationCode, path string, fileSystemError error) *FileError {
+	return fileErrorFromFileSystemError(operation, path, fileSystemError)
 }

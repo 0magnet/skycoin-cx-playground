@@ -3,8 +3,8 @@ package ast
 import "github.com/skycoin/skycoin-cx/t0-types"
 
 // VIOLATION: init chaining. Init 2: the shared ConstCxArg_* templates here and
-// in arg_constants_ptr*.go, called from Go package init. RegisterOpCode writes
-// their Offset.
+// in arg_constants_ptr*.go, called from Go package init. Library registration
+// reads them.
 
 // Integer Types, CxArg Constants
 // VIOLATION: state outside State. Owner: t3-ast; moves to CXArgumentMng in phase 1.
@@ -50,3 +50,9 @@ var ConstCxArg_STR = Param(types.STR)
 // ConstCxArg_UND_TYPE Default und parameter
 // VIOLATION: state outside State. Owner: t3-ast; moves to CXArgumentMng in phase 1.
 var ConstCxArg_UND_TYPE = Param(types.UNDEFINED)
+
+// ConstCxArg_FUNC is a function reference parameter. The compiler resolves
+// the function named by the argument and passes its CXFunctionGid as an i64
+// literal, so the opcode never looks a name up, see #432.
+// VIOLATION: state outside State. Owner: t3-ast; moves to CXArgumentMng in phase 1.
+var ConstCxArg_FUNC = Param(types.FUNC)

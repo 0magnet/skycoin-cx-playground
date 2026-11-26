@@ -17,7 +17,7 @@ func popStack(prgrm *CXProgram, call *CXCall) error {
 
 	// copying the outputs to the previous stack frame
 	returnAddr := &prgrm.CallStack[prgrm.CallCounter]
-	returnOp := returnAddr.Operator
+	returnOp := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(returnAddr.Operator)
 	returnLine := returnAddr.Line
 	returnFP := returnAddr.FramePointer
 	fp := call.FramePointer
@@ -33,7 +33,7 @@ func popStack(prgrm *CXProgram, call *CXCall) error {
 
 	cxAtomicOpOutputs := cxAtomicOp.GetOutputs(prgrm)
 	lenOuts := len(cxAtomicOpOutputs)
-	callOperatorOutputs := call.Operator.GetOutputs(prgrm)
+	callOperatorOutputs := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(call.Operator).GetOutputs(prgrm)
 	for i, outputIdx := range callOperatorOutputs {
 		// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
 		// Now an arena getter, site S0098.
@@ -91,6 +91,8 @@ func wipeDeclarationMemory(prgrm *CXProgram, cxAtomicOp *CXAtomicOperator) error
 	}
 
 	if OffsetEscaped(offset) {
+		// GCREACH: allocates the object of an escaped local, which adds to
+		// the GC pressure, see docs/GarbageCollector.md.
 		EscapedAllocate(prgrm, newFP, offset, escapedSize(prgrm, cxAtomicOutputTypeSig))
 		return nil
 	}
@@ -104,6 +106,8 @@ func wipeDeclarationMemory(prgrm *CXProgram, cxAtomicOp *CXAtomicOperator) error
 func processBuiltInOperators(prgrm *CXProgram, expr *CXExpression, cxAtomicOp *CXAtomicOperator, cxAtomicOpOperator *CXFunction, globalInputs *[]CXValue, globalOutputs *[]CXValue, fp types.Pointer) error {
 	inputs := cxAtomicOp.GetInputs(prgrm)
 	inputCount := len(inputs)
+	// VIOLATION VMALLOC-002: grows the operand buffers only when RunBuffersPrepare
+	// has not sized them, #407.
 	if inputCount > len(*globalInputs) {
 		*globalInputs = make([]CXValue, inputCount)
 	}
@@ -176,7 +180,11 @@ func processBuiltInOperators(prgrm *CXProgram, expr *CXExpression, cxAtomicOp *C
 		argIndex++
 	}
 
-	OpcodeHandlers[cxAtomicOpOperator.AtomicOPCode](prgrm, inputValues, outputValues)
+	if cxAtomicOpOperator.AtomicOPCode == constants.OP_LIBRARY_CALL {
+		libraryCall(prgrm, cxAtomicOpOperator, inputValues, outputValues)
+	} else if !OpcodeDispatch(prgrm, cxAtomicOpOperator.AtomicOPCode, inputValues, outputValues) {
+		panic(RuntimeOpcodeUnlinked(cxAtomicOpOperator.AtomicOPCode))
+	}
 
 	// Expr points into fn.Expressions and is valid for this step only.
 	for i := range inputValues {
@@ -196,10 +204,7 @@ func processNonAtomicOperators(prgrm *CXProgram, cxAtomicOp *CXAtomicOperator, c
 	   with the current expression's operator
 	*/
 	newFP := prgrm.Stack.Pointer
-	if prgrm.CallCounter+1 >= constants.CALLSTACK_SIZE || newFP+cxAtomicOpOperator.Size > constants.STACK_SIZE {
-		// Pushes and panics, so RuntimeError pops the frame as before.
-		callPush(prgrm, cxAtomicOpOperator)
-	}
+	callPushCheck(prgrm, cxAtomicOpOperator)
 
 	// The inputs are copied before the push, so an error in one stops the
 	// caller, as it does on vm.
@@ -244,31 +249,35 @@ func processNonAtomicOperators(prgrm *CXProgram, cxAtomicOp *CXAtomicOperator, c
 			byts)
 	}
 
-	callPush(prgrm, cxAtomicOpOperator)
+	callPush(prgrm, cxAtomicOp.Operator, cxAtomicOpOperator)
 	return nil
 }
 
-// callPush makes operator the current call, with its frame at the stack
-// pointer. It panics with STACK_OVERFLOW_ERROR when the call or stack is full.
-func callPush(prgrm *CXProgram, operator *CXFunction) {
-	prgrm.CallCounter++
-	if prgrm.CallCounter >= constants.CALLSTACK_SIZE {
-		panic(constants.STACK_OVERFLOW_ERROR)
-	}
-
-	newCall := &prgrm.CallStack[prgrm.CallCounter]
-	newCall.Operator = operator
-	newCall.Line = 0
-	newCall.FramePointer = prgrm.Stack.Pointer
-	prgrm.Stack.Pointer += operator.Size
-	if prgrm.Stack.Pointer > constants.STACK_SIZE {
+// callPushCheck panics with STACK_OVERFLOW_ERROR when a call of operator
+// does not fit in the call stack or the stack. The caller stays the current call.
+func callPushCheck(prgrm *CXProgram, operator *CXFunction) {
+	if prgrm.CallCounter+1 >= constants.CALLSTACK_SIZE || prgrm.Stack.Pointer+operator.Size > constants.STACK_SIZE {
 		panic(constants.STACK_OVERFLOW_ERROR)
 	}
 }
 
-func (call *CXCall) Call(prgrm *CXProgram, globalInputs *[]CXValue, globalOutputs *[]CXValue) error {
+// callPush makes operator, the function gid names, the current call, with its
+// frame at the stack pointer, after callPushCheck.
+func callPush(prgrm *CXProgram, gid CXFunctionGid, operator *CXFunction) {
+	callPushCheck(prgrm, operator)
+	prgrm.CallCounter++
+	newCall := &prgrm.CallStack[prgrm.CallCounter]
+	newCall.Operator = gid
+	newCall.Line = 0
+	newCall.FramePointer = prgrm.Stack.Pointer
+	prgrm.Stack.Pointer += operator.Size
+}
+
+// Call runs the next step of call, whose function fn is, the pointer the run
+// loop borrowed from CXFunctionMng for call.Operator.
+func (call *CXCall) Call(prgrm *CXProgram, fn *CXFunction, globalInputs *[]CXValue, globalOutputs *[]CXValue) error {
 	// CX is still single-threaded, so only one stack
-	if call.Line >= call.Operator.LineCount {
+	if call.Line >= fn.LineCount {
 		/*
 		   popping the stack
 		*/
@@ -284,7 +293,6 @@ func (call *CXCall) Call(prgrm *CXProgram, globalInputs *[]CXValue, globalOutput
 	   continue with call operator's execution
 	*/
 
-	fn := call.Operator
 	// A pointer, not a copy, so nothing escapes to the heap (VMALLOC-001, #407).
 	expr := &fn.Expressions[call.Line]
 	fp := call.FramePointer
@@ -303,9 +311,7 @@ func (call *CXCall) Call(prgrm *CXProgram, globalInputs *[]CXValue, globalOutput
 	if err != nil {
 		return err
 	}
-	// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-	// Now an arena getter, site S0117.
-	cxAtomicOpOperator := prgrm.GetFunctionFromArray(cxAtomicOp.Operator)
+	cxAtomicOpOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(cxAtomicOp.Operator)
 	// if it's a native, then we just process the arguments with execNative
 	//TODO: WHEN WOULD OPERATOR EVER BE NIL?
 	if cxAtomicOpOperator == nil {

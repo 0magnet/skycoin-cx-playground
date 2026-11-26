@@ -2,28 +2,23 @@ package types
 
 //"fmt"
 
-func AllocWrite_str_data(prgrm interface{}, memory []byte, str string) Pointer {
-	return AllocWrite_obj_data(prgrm, memory, []byte(str))
-}
-
 func Write_str_data(memory []byte, offset Pointer, value string) {
 	bytes := []byte(value)
 	size := Compute_obj_size(bytes)
 	Write_obj_data(memory, offset, size, bytes)
 }
 
-func Read_str_data(memory []byte, offset Pointer) string {
-	str := Read_obj_data(memory, offset)
-	return string(str)
-}
-
-func Write_str(prgrm interface{}, memory []byte, offset Pointer, str string) {
-	Write_obj(prgrm, memory, offset, []byte(str))
-}
-
+// VIOLATION STRHOT-011: B, only the boundary opcodes use Go strings, #412.
+// VIOLATION VMALLOC-003: a Go string copy of a str, for the boundary opcodes only, #407.
 func Read_str(memory []byte, offset Pointer) string {
 	str := string(Read_obj(memory, offset))
 	return str
+}
+
+// Read_str_bytes returns the bytes of the str whose pointer is at offset, a
+// view into memory without a copy. The empty str is nil.
+func Read_str_bytes(memory []byte, offset Pointer) []byte {
+	return Read_obj(memory, offset)
 }
 
 func Read_str_size(memory []byte, offset Pointer) Pointer {

@@ -99,9 +99,7 @@ func buildStrFunctions(prgrm *CXProgram, pkg *CXPackage, ast1 *string) {
 	// declaration order, the order of their indexes.
 	var j int
 	for _, fnIdx := range slices.Sorted(maps.Values(pkg.Functions)) {
-		// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-		// Now an arena getter, site S0479.
-		fn := prgrm.GetFunctionFromArray(fnIdx)
+		fn := prgrm.CxIrState.CXFunctionMng.CXFunctionGet(fnIdx)
 
 		if fn.Name == prgrm.CxIrState.CxIrStateNameSysInit {
 			continue
@@ -133,9 +131,7 @@ func buildStrFunctions(prgrm *CXProgram, pkg *CXPackage, ast1 *string) {
 				panic(err)
 			}
 
-			// OBJMODEL: state.CXFunctionMng.CXFunctionGet(gid), phase 5 #352.
-			// Now an arena getter, site S0481.
-			cxAtomicOpOperator := prgrm.GetFunctionFromArray(cxAtomicOp.Operator)
+			cxAtomicOpOperator := prgrm.CxIrState.CxIrStateFunctionGetOrNil(cxAtomicOp.Operator)
 			// Adding label in case a `goto` statement was used for the expression.
 			if cxAtomicOp.Label != stringpool.StringGidNil {
 				lbl = " <<" + prgrm.CXProgramNameText(cxAtomicOp.Label) + ">>"
@@ -147,7 +143,7 @@ func buildStrFunctions(prgrm *CXProgram, pkg *CXPackage, ast1 *string) {
 			if cxAtomicOpOperator != nil {
 				if cxAtomicOpOperator.IsBuiltIn() {
 
-					opName1 = OpNames[cxAtomicOpOperator.AtomicOPCode]
+					opName1 = cxAtomicOpOperator.BuiltInName()
 				} else {
 					opName1 = prgrm.CXProgramNameText(cxAtomicOpOperator.Name)
 				}
@@ -307,203 +303,6 @@ func SignatureStringOfFunction(prgrm *CXProgram, pkg *CXPackage, f *CXFunction) 
 
 	return fmt.Sprintf("func %s(%s) (%s)",
 		prgrm.CXProgramNameText(f.Name), ins.String(), outs.String())
-}
-
-// valueAt prints the value of type typ with dimensions dims at addr. A zero
-// dimension is a slice, which holds a pointer to its object.
-func valueAt(prgrm *CXProgram, addr types.Pointer, typ types.Code, size types.Pointer, structType *CXStruct, dims []types.Pointer, sep string) string {
-	if len(dims) == 0 {
-		if typ == types.POINTER {
-			return fmt.Sprintf("%v", types.Read_ptr(prgrm.Memory, addr))
-		}
-		if structType != nil {
-			return structAt(prgrm, addr, structType)
-		}
-		val, _ := readAtomic(prgrm.Memory, typ.Name(), addr)
-		return val
-	}
-
-	stride := size
-	for i := len(dims) - 1; i > 0; i-- {
-		if dims[i] == 0 {
-			stride = types.POINTER_SIZE
-		} else {
-			stride *= dims[i]
-		}
-	}
-
-	if dims[0] != 0 {
-		return elementsAt(prgrm, addr, dims[0], stride, typ, size, structType, dims[1:], sep)
-	}
-	sliceOffset := types.Read_ptr(prgrm.Memory, addr)
-	return elementsAt(prgrm, sliceOffset+types.OBJECT_HEADER_SIZE+constants.SLICE_HEADER_SIZE, GetSliceLen(prgrm, sliceOffset), stride, typ, size, structType, dims[1:], sep)
-}
-
-// elementsAt prints the n elements of size stride that start at addr.
-func elementsAt(prgrm *CXProgram, addr, n, stride types.Pointer, typ types.Code, size types.Pointer, structType *CXStruct, dims []types.Pointer, sep string) string {
-	val := "["
-	for c := types.Pointer(0); c < n; c++ {
-		if c > 0 {
-			val += sep
-		}
-		val += valueAt(prgrm, addr+c*stride, typ, size, structType, dims, sep)
-	}
-	return val + "]"
-}
-
-// structAt prints the fields of the struct instance at addr as {name: value, ...}.
-func structAt(prgrm *CXProgram, addr types.Pointer, strct *CXStruct) string {
-	val := "{"
-	off := types.Pointer(0)
-	for c, fldIdx := range strct.Fields {
-		// OBJMODEL: state.CXTypeSignatureMng.CXTypeSignatureGet(gid), phase 5 #332.
-		// Now an arena getter, site S0487.
-		fld := prgrm.GetCXTypeSignatureFromArray(fldIdx)
-		if c > 0 {
-			val += ", "
-		}
-		val += prgrm.CXProgramNameText(fld.Name) + ": " + typeSignatureAt(prgrm, addr+off, fld)
-		off += fld.GetSize(prgrm, false)
-	}
-	return val + "}"
-}
-
-// typeSignatureAt prints the value of the struct field typeSig at addr.
-func typeSignatureAt(prgrm *CXProgram, addr types.Pointer, typeSig *CXTypeSignature) string {
-	switch typeSig.Type {
-	case TYPE_ATOMIC:
-		val, _ := readAtomic(prgrm.Memory, types.Code(typeSig.Meta).Name(), addr)
-		return val
-	case TYPE_ARRAY_ATOMIC, TYPE_SLICE_ATOMIC:
-		// OBJMODEL: state.CXTypeSignature_ArrayMng.CXTypeSignature_ArrayGet(gid), phase 5 #317.
-		// Now an arena getter, site S0488.
-		arr := prgrm.GetCXTypeSignatureArrayFromArray(typeSig.Meta)
-		eltType := types.Code(arr.Meta)
-		return valueAt(prgrm, addr, eltType, eltType.Size(), nil, arr.Lengths, printSeparator(arr.Lengths))
-	case TYPE_STRUCT:
-		// OBJMODEL: state.CXTypeSignature_StructMng.CXTypeSignature_StructGet(gid), phase 5 #322.
-		// Now an arena getter, site S0490.
-		return structAt(prgrm, addr, prgrm.GetCXTypeSignatureStructFromArray(typeSig.Meta).StructType)
-	case TYPE_CXARGUMENT_DEPRECATE:
-		// OBJMODEL: state.CXArgumentMng.CXArgumentGet(gid), phase 5 #327.
-		// Now an arena getter, site S0491.
-		elt := prgrm.GetCXArgFromArray(CXArgumentIndex(typeSig.Meta))
-		return valueAt(prgrm, addr, elt.Type, elt.Size, elt.StructType, elt.Lengths, printSeparator(elt.Lengths))
-	}
-	// Pointers print their address.
-	return fmt.Sprintf("%v", types.Read_ptr(prgrm.Memory, addr))
-}
-
-// printSeparator separates the elements of a one dimensional collection with
-// commas and those of a multi dimensional one with spaces.
-func printSeparator(dims []types.Pointer) string {
-	if len(dims) > 1 {
-		return " "
-	}
-	return ", "
-}
-
-// readAtomic reads a value of the atomic type named typ at offset in memory.
-// It returns false when typ is not an atomic type.
-func readAtomic(memory []byte, typ string, offset types.Pointer) (string, bool) {
-	switch typ {
-	case "bool":
-		return fmt.Sprintf("%v", types.Read_bool(memory, offset)), true
-	case "str":
-		return fmt.Sprintf("%v", types.Read_str(memory, offset)), true
-	case "i8":
-		return fmt.Sprintf("%v", types.Read_i8(memory, offset)), true
-	case "i16":
-		return fmt.Sprintf("%v", types.Read_i16(memory, offset)), true
-	case "i32":
-		return fmt.Sprintf("%v", types.Read_i32(memory, offset)), true
-	case "i64":
-		return fmt.Sprintf("%v", types.Read_i64(memory, offset)), true
-	case "ui8":
-		return fmt.Sprintf("%v", types.Read_ui8(memory, offset)), true
-	case "ui16":
-		return fmt.Sprintf("%v", types.Read_ui16(memory, offset)), true
-	case "ui32":
-		return fmt.Sprintf("%v", types.Read_ui32(memory, offset)), true
-	case "ui64":
-		return fmt.Sprintf("%v", types.Read_ui64(memory, offset)), true
-	case "f32":
-		return fmt.Sprintf("%v", types.Read_f32(memory, offset)), true
-	case "f64":
-		return fmt.Sprintf("%v", types.Read_f64(memory, offset)), true
-	}
-	return "", false
-}
-
-// argValueAt prints the value that elt, the last element of an argument's
-// field path, names at addr after its indexes and dereferences.
-func argValueAt(prgrm *CXProgram, addr types.Pointer, elt *CXArgument) string {
-	typ := elt.Type
-	if elt.IsPointer() {
-		for _, op := range elt.DereferenceOperations {
-			if op == constants.DEREF_POINTER {
-				typ = elt.PointerTargetType
-				break
-			}
-		}
-	}
-	dims := elt.Lengths
-	if len(elt.Indexes) <= len(dims) {
-		dims = dims[len(elt.Indexes):]
-	}
-	return valueAt(prgrm, addr, typ, elt.Size, elt.StructType, dims, printSeparator(dims))
-}
-
-// GetPrintableValue prints the value of argTypeSig in the frame at fp.
-func GetPrintableValue(prgrm *CXProgram, fp types.Pointer, argTypeSig *CXTypeSignature) string {
-	switch argTypeSig.Type {
-	case TYPE_CXARGUMENT_DEPRECATE:
-		// OBJMODEL: state.CXArgumentMng.CXArgumentGet(gid), phase 5 #327.
-		// Now an arena getter, site S0493.
-		arg := prgrm.GetCXArgFromArray(CXArgumentIndex(argTypeSig.Meta))
-		elt := arg.GetAssignmentElement(prgrm)
-		return argValueAt(prgrm, GetFinalOffset(prgrm, fp, nil, argTypeSig), elt)
-	case TYPE_ATOMIC:
-		if argTypeSig.PassBy == constants.PASSBY_REFERENCE {
-			return fmt.Sprintf("%v", GetFinalOffset(prgrm, fp, nil, argTypeSig))
-		}
-		val, _ := readAtomic(prgrm.Memory, types.Code(argTypeSig.Meta).Name(), GetFinalOffset(prgrm, fp, nil, argTypeSig))
-		return val
-	case TYPE_POINTER_ATOMIC:
-		return fmt.Sprintf("%v", types.Read_ptr(prgrm.Memory, GetFinalOffset(prgrm, fp, nil, argTypeSig)))
-	case TYPE_ARRAY_ATOMIC, TYPE_POINTER_ARRAY_ATOMIC, TYPE_SLICE_ATOMIC, TYPE_POINTER_SLICE_ATOMIC:
-		// OBJMODEL: state.CXTypeSignature_ArrayMng.CXTypeSignature_ArrayGet(gid), phase 5 #317.
-		// Now an arena getter, site S0494.
-		arr := prgrm.GetCXTypeSignatureArrayFromArray(argTypeSig.Meta)
-		eltType := types.Code(arr.Meta)
-		dims := arr.Lengths
-		if len(arr.Indexes) <= len(dims) {
-			dims = dims[len(arr.Indexes):]
-		}
-		addr := GetFinalOffset(prgrm, fp, nil, argTypeSig)
-		switch {
-		case (argTypeSig.Type == TYPE_POINTER_ARRAY_ATOMIC || argTypeSig.Type == TYPE_POINTER_SLICE_ATOMIC) && argTypeSig.IsDeref:
-			return valueAt(prgrm, addr, eltType, eltType.Size(), nil, dims, printSeparator(dims))
-		case argTypeSig.Type == TYPE_POINTER_ARRAY_ATOMIC || argTypeSig.Type == TYPE_POINTER_SLICE_ATOMIC:
-			return fmt.Sprintf("%v", types.Read_ptr(prgrm.Memory, addr))
-		}
-		return valueAt(prgrm, addr, eltType, eltType.Size(), nil, dims, printSeparator(dims))
-	case TYPE_STRUCT, TYPE_POINTER_STRUCT:
-		if argTypeSig.Type == TYPE_POINTER_STRUCT && !argTypeSig.IsDeref {
-			return fmt.Sprintf("%v", types.Read_ptr(prgrm.Memory, GetFinalOffset(prgrm, fp, nil, argTypeSig)))
-		}
-		// OBJMODEL: state.CXTypeSignature_StructMng.CXTypeSignature_StructGet(gid), phase 5 #322.
-		// Now an arena getter, site S0496.
-		structDetails := prgrm.GetCXTypeSignatureStructFromArray(argTypeSig.Meta)
-		addr := GetFinalOffset(prgrm, fp, nil, argTypeSig)
-		if n := len(structDetails.Fields); n > 0 {
-			// OBJMODEL: state.CXArgumentMng.CXArgumentGet(gid), phase 5 #327.
-			// Now an arena getter, site S0497.
-			return argValueAt(prgrm, addr, prgrm.GetCXArgFromArray(structDetails.Fields[n-1]))
-		}
-		return structAt(prgrm, addr, structDetails.StructType)
-	}
-	panic("type is not known")
 }
 
 // getFormattedDerefs is an auxiliary function for `GetFormattedName`. This
@@ -733,9 +532,9 @@ func getFormattedType_CXArg(prgrm *CXProgram, arg *CXArgument) string {
 	typ := ""
 	elt := arg.GetAssignmentElement(prgrm)
 
-	// this is used to know what arg.Lengths index to use
-	// used for cases like [5]*[3]i32, where we jump to another decl spec
-	arrDeclCount := len(arg.Lengths) - 1
+	// Lengths are outermost first and specifiers innermost first, and a slice
+	// takes a length of 0, so [2][]i32 has lengths {2, 0}.
+	arrDeclCount := len(elt.Lengths) - 1
 	// looping declaration specifiers
 	for _, spec := range elt.DeclarationSpecifiers {
 		switch spec {
@@ -744,10 +543,15 @@ func getFormattedType_CXArg(prgrm *CXProgram, arg *CXArgument) string {
 		case constants.DECL_DEREF:
 			typ = typ[1:]
 		case constants.DECL_ARRAY:
-			typ = fmt.Sprintf("[%d]%s", arg.Lengths[arrDeclCount], typ)
+			if arrDeclCount >= 0 {
+				typ = fmt.Sprintf("[%d]%s", elt.Lengths[arrDeclCount], typ)
+			} else {
+				typ = "[?]" + typ
+			}
 			arrDeclCount--
 		case constants.DECL_SLICE:
 			typ = "[]" + typ
+			arrDeclCount--
 		case constants.DECL_INDEXING:
 		default:
 			// base type
@@ -807,20 +611,7 @@ func SignatureStringOfStruct(prgrm *CXProgram, s *CXStruct) string {
 	return fmt.Sprintf("%s struct {%s }", prgrm.CXProgramNameText(s.Name), fields)
 }
 
-// GetArgSizeFromTypeName ...
-func GetArgSizeFromTypeName(typeName string) int {
-	switch typeName {
-	case "bool", "i8", "ui8":
-		return 1
-	case "i16", "ui16":
-		return 2
-	case "str", "i32", "ui32", "f32", "aff":
-		return 4
-	case "i64", "ui64", "f64":
-		return 8
-	default:
-		return 4
-		// return -1
-		// panic(CX_INTERNAL_ERROR)
-	}
+// ArgumentFormattedType is the CX spelling of the type of arg.
+func ArgumentFormattedType(prgrm *CXProgram, arg *CXArgument) string {
+	return getFormattedType_CXArg(prgrm, arg)
 }

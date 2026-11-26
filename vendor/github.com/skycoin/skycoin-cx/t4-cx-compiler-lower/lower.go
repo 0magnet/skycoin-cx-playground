@@ -15,6 +15,8 @@ import (
 	"github.com/skycoin/skycoin-cx/t0-types"
 	"github.com/skycoin/skycoin-cx/t1-constants"
 	"github.com/skycoin/skycoin-cx/t2-cx-runtime-ir"
+	// GCREACH: t3-ast owns the heap and the GC roots. Lowering rejects heap operands,
+	// so vm code never reaches the GC, see docs/GarbageCollector.md.
 	"github.com/skycoin/skycoin-cx/t3-ast"
 )
 
@@ -62,27 +64,31 @@ const (
 	// ReasonOperandOutsideFrame is a stack operand that does not fit the frame
 	// of its function.
 	ReasonOperandOutsideFrame
+	// ReasonLibraryFunctionOutsideSubset is a call through LibraryCall, os.Run
+	// of the process library, which does not run on vm.
+	ReasonLibraryFunctionOutsideSubset
 	// ReasonCount is one past the last reason.
 	ReasonCount
 )
 
 // ReasonNames names each ReasonCode for reports. Read only.
 var ReasonNames = [ReasonCount]string{
-	ReasonNone:                "none",
-	ReasonOpcodeOutsideSubset: "opcode outside subset",
-	ReasonOperandNotScalar:    "operand not scalar",
-	ReasonOperandIndexed:      "operand indexed",
-	ReasonOperandOutsideData:  "operand outside data",
-	ReasonOperandByReference:  "operand by reference",
-	ReasonOperandString:       "operand string",
-	ReasonOperandCount:        "operand count",
-	ReasonDeclarationType:     "declaration type",
-	ReasonExpressionType:      "expression type",
-	ReasonCalleeLayout:        "callee layout",
-	ReasonParameterLayout:     "parameter layout",
-	ReasonOperandHeap:         "operand heap",
-	ReasonPrintfFormat:        "printf format",
-	ReasonOperandOutsideFrame: "operand outside frame",
+	ReasonNone:                         "none",
+	ReasonOpcodeOutsideSubset:          "opcode outside subset",
+	ReasonOperandNotScalar:             "operand not scalar",
+	ReasonOperandIndexed:               "operand indexed",
+	ReasonOperandOutsideData:           "operand outside data",
+	ReasonOperandByReference:           "operand by reference",
+	ReasonOperandString:                "operand string",
+	ReasonOperandCount:                 "operand count",
+	ReasonDeclarationType:              "declaration type",
+	ReasonExpressionType:               "expression type",
+	ReasonCalleeLayout:                 "callee layout",
+	ReasonParameterLayout:              "parameter layout",
+	ReasonOperandHeap:                  "operand heap",
+	ReasonPrintfFormat:                 "printf format",
+	ReasonOperandOutsideFrame:          "operand outside frame",
+	ReasonLibraryFunctionOutsideSubset: "library function outside subset",
 }
 
 // Failure is one function that did not lower. FailureExpression indexes its
@@ -135,6 +141,9 @@ type state struct {
 	statePrintLine   int
 	stateImage       ir.Image
 	stateFiles       map[ast.SourceFileGid]uint32
+	stateLocals      []ir.Local
+	stateLocalNames  map[string]uint32
+	stateReadOnly    []ir.Span
 }
 
 // jumpFixup is a jump target still in expression indexes.
@@ -150,10 +159,11 @@ type jumpFixup struct {
 // be compiled and not yet run.
 func Program(prgrm *ast.CXProgram) (ir.Image, []Failure) {
 	s := &state{
-		statePrgrm:     prgrm,
-		stateStackSize: pointerToUint32(prgrm.Stack.Size),
-		stateDataStart: pointerToUint32(prgrm.Data.StartsAt),
-		stateFiles:     map[ast.SourceFileGid]uint32{},
+		statePrgrm:      prgrm,
+		stateStackSize:  pointerToUint32(prgrm.Stack.Size),
+		stateDataStart:  pointerToUint32(prgrm.Data.StartsAt),
+		stateFiles:      map[ast.SourceFileGid]uint32{},
+		stateLocalNames: map[string]uint32{},
 	}
 	s.stateDataEnd = s.stateDataStart + pointerToUint32(prgrm.Data.Size)
 	opcodeTableBuild(&s.stateTable)
@@ -164,25 +174,31 @@ func Program(prgrm *ast.CXProgram) (ir.Image, []Failure) {
 	image.ImageStackSize = s.stateStackSize
 	image.ImageDataStart = s.stateDataStart
 	image.ImageData = append([]byte(nil), prgrm.Memory[s.stateDataStart:s.stateDataEnd]...)
-	image.ImageFuncs = make([]ir.Func, len(prgrm.CXFunctions))
-	image.ImageFuncNames = make([]string, len(prgrm.CXFunctions))
+	functions := prgrm.CXProgramFunctionSlotCount()
+	image.ImageFuncs = make([]ir.Func, functions)
+	image.ImageFuncNames = make([]string, functions)
 	image.ImageEntryInit = ir.ImageFuncNone
 	image.ImageEntryMain = ir.ImageFuncNone
+
+	image.ImageOperationsEnabled = prgrm.ProgramOperationsEnabled
 
 	if packageIndex, found := prgrm.Packages[prgrm.CxIrState.CxIrStateNameMain]; found {
 		mainPackage, err := prgrm.GetPackageFromArray(packageIndex)
 		assert.AssertInvariantTrue(err == nil, "lower: main package index out of range")
 		if functionIndex, found := mainPackage.Functions[prgrm.CxIrState.CxIrStateNameSysInit]; found {
-			image.ImageEntryInit = uint32(functionIndex)
+			image.ImageEntryInit = ast.CXFunctionGidSlot(functionIndex)
 		}
 		if functionIndex, found := mainPackage.Functions[prgrm.CxIrState.CxIrStateNameMain]; found {
-			image.ImageEntryMain = uint32(functionIndex)
+			image.ImageEntryMain = ast.CXFunctionGidSlot(functionIndex)
 		}
 	}
 
 	var failures []Failure
-	for functionIndex := range prgrm.CXFunctions {
-		fn := &prgrm.CXFunctions[functionIndex]
+	for functionIndex := 0; functionIndex < functions; functionIndex++ {
+		fn := prgrm.CXProgramFunctionSlotLive(functionIndex)
+		if fn == nil {
+			continue
+		}
 		image.ImageFuncNames[functionIndex] = prgrm.CXProgramNameText(fn.Name)
 		if fn.IsBuiltIn() {
 			continue
@@ -191,6 +207,7 @@ func Program(prgrm *ast.CXProgram) (ir.Image, []Failure) {
 			failures = append(failures, failure)
 		}
 	}
+	s.readOnlyEnd()
 	return s.stateImage, failures
 }
 
@@ -203,6 +220,7 @@ func opcodeNumber(name string) int {
 
 // function lowers fn into stateImage.ImageFuncs[functionIndex].
 func (s *state) function(functionIndex uint32, fn *ast.CXFunction) (Failure, bool) {
+	s.stateLocals = s.stateLocals[:0]
 	failure := Failure{FailureFunction: functionIndex}
 	lowered := ir.Func{FuncFrameSize: pointerToUint32(fn.Size)}
 	s.stateFrameSize = lowered.FuncFrameSize
@@ -215,6 +233,12 @@ func (s *state) function(functionIndex uint32, fn *ast.CXFunction) (Failure, boo
 	if lowered.FuncOutputs, reason = s.slots(fn.GetOutputs(s.statePrgrm), lowered.FuncFrameSize); reason != ReasonNone {
 		failure.FailureReason = ReasonParameterLayout
 		return failure, true
+	}
+	for i, signatureIndex := range fn.GetInputs(s.statePrgrm) {
+		s.localAdd(signatureIndex, lowered.FuncInputs[i].SlotOffset, lowered.FuncInputs[i].SlotSize)
+	}
+	for i, signatureIndex := range fn.GetOutputs(s.statePrgrm) {
+		s.localAdd(signatureIndex, lowered.FuncOutputs[i].SlotOffset, lowered.FuncOutputs[i].SlotSize)
 	}
 
 	lineCount := fn.LineCount
@@ -250,7 +274,7 @@ func (s *state) function(functionIndex uint32, fn *ast.CXFunction) (Failure, boo
 
 		cxAtomicOp, err := s.statePrgrm.GetCXAtomicOp(expr.Index)
 		assert.AssertInvariantTrue(err == nil, "lower: atomic operator index out of range")
-		operator := s.statePrgrm.GetFunctionFromArray(cxAtomicOp.Operator)
+		operator := s.statePrgrm.CxIrState.CxIrStateFunctionGetOrNil(cxAtomicOp.Operator)
 
 		switch {
 		case operator == nil:
@@ -285,6 +309,7 @@ func (s *state) function(functionIndex uint32, fn *ast.CXFunction) (Failure, boo
 	lowered.FuncCode = code
 	lowered.FuncLineFirst = uint32(len(s.stateImage.ImageLines))
 	lowered.FuncLineCount = uint32(len(lines))
+	s.localsEnd(&lowered)
 	s.stateImage.ImageLines = append(s.stateImage.ImageLines, lines...)
 	s.stateImage.ImageFuncs[functionIndex] = lowered
 	return Failure{}, false
@@ -321,11 +346,15 @@ func (s *state) declaration(code []ir.Instr, cxAtomicOp *ast.CXAtomicOperator) (
 	if ast.OffsetEscaped(offset) {
 		return code, ReasonOperandHeap
 	}
+	size := pointerToUint32(signature.GetSize(s.statePrgrm, false))
+	if uint64(offset)+uint64(size) <= uint64(s.stateFrameSize) {
+		s.localAdd(outputs[0], pointerToUint32(offset), size)
+	}
 	return append(code, ir.Instr{
 		InstrOpcode: ir.OpcodeZero,
 		InstrMode:   ir.InstrModeFrameA,
 		InstrA:      pointerToUint32(offset),
-		InstrN:      pointerToUint32(signature.GetSize(s.statePrgrm, false)),
+		InstrN:      size,
 	}), ReasonNone
 }
 
@@ -386,6 +415,14 @@ func (s *state) builtIn(code []ir.Instr, line int, cxAtomicOp *ast.CXAtomicOpera
 		return append(code, in), noFixup, false, ReasonNone, 0
 	case s.statePrintf:
 		code, reason := s.printf(code, inputs, outputs)
+		return code, noFixup, false, reason, 0
+	case constants.OP_LIBRARY_CALL:
+		// os.Run of the process library, the one function still called
+		// through LibraryCall, takes and returns a str and never lowers.
+		return code, noFixup, false, ReasonLibraryFunctionOutsideSubset, 0
+	}
+	if libraryOpcode := libraryOpcodeOf(opcode); libraryOpcode != ir.OpcodeInvalid {
+		code, reason := s.libraryCall(code, cxAtomicOp, operator, ir.Instr{InstrOpcode: libraryOpcode})
 		return code, noFixup, false, reason, 0
 	}
 
@@ -593,7 +630,8 @@ func (s *state) call(code []ir.Instr, cxAtomicOp *ast.CXAtomicOperator, callee *
 		code = append(code, in)
 	}
 
-	code = append(code, ir.Instr{InstrOpcode: ir.OpcodeCall, InstrM: uint32(cxAtomicOp.Operator)})
+	code = append(code, ir.Instr{InstrOpcode: ir.OpcodeCall, InstrM: ast.CXFunctionGidSlot(cxAtomicOp.Operator)})
+	var sources []ir.Slot
 	for i, signatureIndex := range calleeOutputs {
 		if i >= len(outputs) {
 			continue
@@ -602,6 +640,17 @@ func (s *state) call(code []ir.Instr, cxAtomicOp *ast.CXAtomicOperator, callee *
 		if reason != ReasonNone {
 			return code, ReasonCalleeLayout
 		}
+		sources = append(sources, source)
+	}
+	return s.callResults(code, outputs, sources)
+}
+
+// callResults copies the outputs of the call that just returned, from the
+// sources in its frame at sp, to the operands outputs. A computed output
+// goes through scratch.
+func (s *state) callResults(code []ir.Instr, outputs []ast.CXTypeSignatureIndex, sources []ir.Slot) ([]ir.Instr, ReasonCode) {
+	for i, source := range sources {
+		var reason ReasonCode
 		var tail []ir.Instr
 		var destination place
 		if tail, destination, reason = s.placeOf(nil, outputs[i]); reason != ReasonNone {
@@ -752,6 +801,15 @@ func (s *state) placeStatic(p place) (operand, ReasonCode) {
 // field becomes code. A place without index or dereference stays static,
 // with its field offsets added.
 func (s *state) placeOf(code []ir.Instr, signatureIndex ast.CXTypeSignatureIndex) ([]ir.Instr, place, ReasonCode) {
+	code, p, reason := s.placeOfSignature(code, signatureIndex)
+	if reason == ReasonNone {
+		s.readOnlyAdd(signatureIndex, p)
+	}
+	return code, p, reason
+}
+
+// placeOfSignature is placeOf without recording literals.
+func (s *state) placeOfSignature(code []ir.Instr, signatureIndex ast.CXTypeSignatureIndex) ([]ir.Instr, place, ReasonCode) {
 	prgrm := s.statePrgrm
 	signature := prgrm.GetCXTypeSignatureFromArray(signatureIndex)
 	size := pointerToUint32(signature.GetSize(prgrm, false))
@@ -869,7 +927,9 @@ func (s *state) placeDereferences(code []ir.Instr, p *place, arg *ast.CXArgument
 			}
 			elementSize := ast.GetDerefSize(s.statePrgrm, arg, indexCount, derefPointer, true)
 			lengths := arg.Lengths[indexCount+1:]
-			if dims := arg.ArraySliceDimensions(); dims > indexCount {
+			if direct, behind := arg.DirectDimensions(); behind && indexCount < direct {
+				lengths = arg.Lengths[indexCount+1 : direct]
+			} else if dims := arg.ArraySliceDimensions(); dims > indexCount {
 				// The elements of [N][]T are slice headers.
 				elementSize, lengths = types.POINTER_SIZE, arg.Lengths[indexCount+1:dims]
 			}
@@ -979,4 +1039,164 @@ func (s *state) file(file ast.SourceFileGid) uint32 {
 func pointerToUint32(pointer types.Pointer) uint32 {
 	assert.AssertInvariantTrue(uint64(pointer) <= uint64(^uint32(0)), "lower: offset does not fit in 32 bits")
 	return uint32(pointer)
+}
+
+// libraryBufferInput reports whether a library function input is a byte
+// buffer, an input of undefined type. The caller passes a ui8 array, which
+// the function reads or fills in place, see docs/Networking.md.
+func libraryBufferInput(prgrm *ast.CXProgram, signatureIndex ast.CXTypeSignatureIndex) bool {
+	signature := prgrm.GetCXTypeSignatureFromArray(signatureIndex)
+	switch signature.Type {
+	case ast.TYPE_ATOMIC:
+		return types.Code(signature.Meta) == types.UNDEFINED
+	case ast.TYPE_CXARGUMENT_DEPRECATE:
+		return prgrm.GetCXArgFromArray(ast.CXArgumentIndex(signature.Meta)).Type == types.UNDEFINED
+	}
+	return false
+}
+
+// libraryBuffer lowers a byte buffer input as the address and the byte size
+// of the ui8 array, each a pointer, at offset of the block. The vm form
+// reads or fills memory there, as the old loop does at the array's offset.
+func (s *state) libraryBuffer(code []ir.Instr, signatureIndex ast.CXTypeSignatureIndex, offset uint32) ([]ir.Instr, ReasonCode) {
+	prgrm := s.statePrgrm
+	signature := prgrm.GetCXTypeSignatureFromArray(signatureIndex)
+	if signature.Type != ast.TYPE_ARRAY_ATOMIC || signature.GetType(prgrm) != types.UI8 {
+		return code, ReasonOperandNotScalar
+	}
+	code, p, reason := s.placeOf(code, signatureIndex)
+	if reason != ReasonNone {
+		return code, reason
+	}
+	code, address, reason := s.addressOf(code, p)
+	if reason != ReasonNone {
+		return code, reason
+	}
+	addressSlot := operand{operandOffset: s.scratch(machinePointerSize), operandSize: machinePointerSize}
+	operandSet(&address, 2, addressSlot)
+	// OpcodeAddressOf of an absolute A writes A itself, here the size.
+	sizeSlot := operand{operandOffset: s.scratch(machinePointerSize), operandSize: machinePointerSize}
+	size := ir.Instr{InstrOpcode: ir.OpcodeAddressOf, InstrA: p.placeSize}
+	operandSet(&size, 2, sizeSlot)
+	addressArg := ir.Instr{InstrOpcode: ir.OpcodeCallArg, InstrC: offset, InstrN: machinePointerSize}
+	operandSet(&addressArg, 0, addressSlot)
+	sizeArg := ir.Instr{InstrOpcode: ir.OpcodeCallArg, InstrC: offset + machinePointerSize, InstrN: machinePointerSize}
+	operandSet(&sizeArg, 0, sizeSlot)
+	return append(code, address, size, addressArg, sizeArg), ReasonNone
+}
+
+// libraryOpcodeOf returns the image opcode of a system library opcode that
+// runs on vm, ir.OpcodeInvalid for any other opcode (decision D119).
+func libraryOpcodeOf(opcode int) ir.Opcode {
+	switch opcode {
+	case constants.OpcodeCipherHashStateNew:
+		return ir.OpcodeCipherHashStateNew
+	case constants.OpcodeCipherHashStateRelease:
+		return ir.OpcodeCipherHashStateRelease
+	case constants.OpcodeNetUpdate:
+		return ir.OpcodeNetUpdate
+	case constants.OpcodeNetReadyCount:
+		return ir.OpcodeNetReadyCount
+	case constants.OpcodeNetReadyNext:
+		return ir.OpcodeNetReadyNext
+	case constants.OpcodeNetClock:
+		return ir.OpcodeNetClock
+	case constants.OpcodeNetRead:
+		return ir.OpcodeNetRead
+	case constants.OpcodeNetWrite:
+		return ir.OpcodeNetWrite
+	case constants.OpcodeNetClose:
+		return ir.OpcodeNetClose
+	case constants.OpcodeNetTimeoutSet:
+		return ir.OpcodeNetTimeoutSet
+	case constants.OpcodeNetTCPListen:
+		return ir.OpcodeNetTCPListen
+	case constants.OpcodeNetTCPDial:
+		return ir.OpcodeNetTCPDial
+	case constants.OpcodeNetUDPListen:
+		return ir.OpcodeNetUDPListen
+	case constants.OpcodeNetUDPDial:
+		return ir.OpcodeNetUDPDial
+	case constants.OpcodeNetUDPReadFrom:
+		return ir.OpcodeNetUDPReadFrom
+	case constants.OpcodeNetUDPWriteTo:
+		return ir.OpcodeNetUDPWriteTo
+	case constants.OpcodeNetUDPPeerResolve:
+		return ir.OpcodeNetUDPPeerResolve
+	case constants.OpcodeFileClose:
+		return ir.OpcodeFileClose
+	case constants.OpcodeFileSeek:
+		return ir.OpcodeFileSeek
+	case constants.OpcodeFileSync:
+		return ir.OpcodeFileSync
+	}
+	return ir.OpcodeInvalid
+}
+
+// libraryCall lowers a call of a system library function that runs on vm,
+// as call lowers a call: a block at sp holds the inputs and then the
+// outputs at the offsets of the native function, call runs the function on
+// it, and the outputs are copied out.
+func (s *state) libraryCall(code []ir.Instr, cxAtomicOp *ast.CXAtomicOperator, callee *ast.CXFunction, call ir.Instr) ([]ir.Instr, ReasonCode) {
+	prgrm := s.statePrgrm
+	inputs := cxAtomicOp.GetInputs(prgrm)
+	outputs := cxAtomicOp.GetOutputs(prgrm)
+	calleeInputs := callee.GetInputs(prgrm)
+	calleeOutputs := callee.GetOutputs(prgrm)
+	if len(inputs) != len(calleeInputs) || len(outputs) > len(calleeOutputs) {
+		return code, ReasonOperandCount
+	}
+	const blockLimit = ^uint32(0)
+	// A byte buffer input has no size of its own, so it takes the two
+	// pointers libraryBuffer writes.
+	inputSlots := make([]ir.Slot, len(calleeInputs))
+	for i, signatureIndex := range calleeInputs {
+		if libraryBufferInput(prgrm, signatureIndex) {
+			inputSlots[i].SlotSize = 2 * machinePointerSize
+			continue
+		}
+		slot, reason := s.slot(signatureIndex, blockLimit)
+		if reason != ReasonNone {
+			return code, ReasonCalleeLayout
+		}
+		inputSlots[i] = slot
+	}
+	outputSlots, reason := s.slots(calleeOutputs, blockLimit)
+	if reason != ReasonNone {
+		return code, ReasonCalleeLayout
+	}
+	// The signatures give the sizes. The block packs the inputs and then the
+	// outputs in order, the layout the vm form of the function reads.
+	blockSize := uint32(0)
+	for _, slots := range [][]ir.Slot{inputSlots, outputSlots} {
+		for i := range slots {
+			slots[i].SlotOffset = blockSize
+			blockSize += slots[i].SlotSize
+		}
+	}
+
+	code = append(code, ir.Instr{InstrOpcode: ir.OpcodeCallFrame, InstrN: blockSize})
+	for i, signatureIndex := range inputs {
+		if libraryBufferInput(prgrm, calleeInputs[i]) {
+			if code, reason = s.libraryBuffer(code, signatureIndex, inputSlots[i].SlotOffset); reason != ReasonNone {
+				return code, reason
+			}
+			continue
+		}
+		if ast.CXTypeSignaturePassBy(prgrm, prgrm.GetCXTypeSignatureFromArray(signatureIndex)) == constants.PASSBY_REFERENCE {
+			return code, ReasonOperandByReference
+		}
+		var value operand
+		if code, value, reason = s.read(code, signatureIndex); reason != ReasonNone {
+			return code, reason
+		}
+		if value.operandSize != inputSlots[i].SlotSize {
+			return code, ReasonOperandCount
+		}
+		in := ir.Instr{InstrOpcode: ir.OpcodeCallArg, InstrC: inputSlots[i].SlotOffset, InstrN: value.operandSize}
+		operandSet(&in, 0, value)
+		code = append(code, in)
+	}
+	code = append(code, call)
+	return s.callResults(code, outputs, outputSlots[:len(outputs)])
 }
